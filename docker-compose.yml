@@ -1,0 +1,20 @@
+services:
+  drama-clip-scout:
+    build: .
+    image: drama-clip-scout:local
+    container_name: drama-clip-scout
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - ./data:/data
+    networks:
+      - drama-net
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  drama-net:
+    external: true
