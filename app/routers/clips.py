@@ -83,6 +83,7 @@ def query_ranked_items(
     time_window: str = "week",
     has_video: bool | None = None,
     keyword: str | None = None,
+    account: str | None = None,
     limit: int = 50,
 ):
     latest = latest_ranking_subquery(db)
@@ -100,6 +101,19 @@ def query_ranked_items(
         query = query.filter(or_(Item.created_time.is_(None), Item.created_time >= since))
     if has_video is not None:
         query = query.filter(Item.is_video.is_(has_video))
+    if account:
+        clean_account = account.strip().lstrip("@")
+        if clean_account:
+            account_url_pattern = f"%/{clean_account}/status/%"
+            x_account_match = or_(
+                Item.author_name.ilike(clean_account),
+                Item.url.ilike(account_url_pattern),
+                Item.permalink.ilike(account_url_pattern),
+            )
+            if source == "x":
+                query = query.filter(x_account_match)
+            elif source == "all":
+                query = query.filter(or_(Source.name != "x", x_account_match))
     if keyword:
         tokens = [part.strip() for part in keyword.split() if part.strip()]
         patterns = [f"%{token}%" for token in tokens] or [f"%{keyword}%"]
@@ -119,13 +133,14 @@ def query_ranked_items(
 def list_clips(
     source: str = Query("all", pattern="^(reddit|x|all)$"),
     min_drama_score: float = Query(0, ge=0, le=100),
-    time_window: str = Query("week", pattern="^(day|week|all)$"),
+    time_window: str = Query("week", pattern="^(day|week|month|year|all)$"),
     has_video: bool | None = None,
     keyword: str | None = None,
+    account: str | None = None,
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
-    rows = query_ranked_items(db, source, min_drama_score, time_window, has_video, keyword, limit)
+    rows = query_ranked_items(db, source, min_drama_score, time_window, has_video, keyword, account, limit)
     return {"results": [serialize_item(item, ranking) for item, ranking in rows]}
 
 

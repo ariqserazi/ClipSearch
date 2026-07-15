@@ -10,7 +10,7 @@ DEFAULT_HEADERS = {
     ),
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.google.com/",
+    "Referer": "https://duckduckgo.com/",
 }
 
 

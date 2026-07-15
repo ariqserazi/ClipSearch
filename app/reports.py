@@ -73,4 +73,8 @@ def since_for_window(time_window: str):
         return now - timedelta(days=1)
     if time_window == "week":
         return now - timedelta(days=7)
+    if time_window == "month":
+        return now - timedelta(days=30)
+    if time_window == "year":
+        return datetime(now.year, 1, 1, tzinfo=timezone.utc)
     return None

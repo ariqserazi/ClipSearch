@@ -20,6 +20,29 @@ class XCollectRequest(BaseModel):
     limit: int = Field(default=50, ge=10, le=100)
 
 
+class XFromRedditRequest(BaseModel):
+    query: str | None = None
+    accounts: list[str] | None = None
+    time_window: Literal["day", "week", "month", "year", "all"] = "month"
+    limit: int = Field(default=50, ge=1, le=100)
+
+
+class XArchiveSearchRequest(BaseModel):
+    account: str | None = None
+    person: str | None = None
+    topic: str | None = None
+    search_provider: Literal["web", "google", "archive", "all"] = "web"
+    archive_urls: list[str] = Field(default_factory=list)
+    archive_html: str | None = None
+    limit: int = Field(default=25, ge=1, le=100)
+
+
+class XArchiveImportRequest(BaseModel):
+    path: str
+    account: str | None = None
+    limit: int = Field(default=100, ge=1, le=5000)
+
+
 class CollectAllRequest(BaseModel):
     reddit: RedditCollectRequest = Field(default_factory=RedditCollectRequest)
     x: XCollectRequest = Field(default_factory=XCollectRequest)
@@ -28,17 +51,20 @@ class CollectAllRequest(BaseModel):
 class ClipFilters(BaseModel):
     source: Literal["reddit", "x", "all"] = "all"
     min_drama_score: float = Field(default=0, ge=0, le=100)
-    time_window: Literal["day", "week", "all"] = "week"
+    time_window: Literal["day", "week", "month", "year", "all"] = "week"
     has_video: bool | None = None
     keyword: str | None = None
+    account: str | None = None
     limit: int = Field(default=50, ge=1, le=200)
 
 
 class AgentSearchRequest(BaseModel):
     source: Literal["reddit", "x", "all"] = "all"
-    time_window: Literal["day", "week"] = "day"
+    time_window: Literal["day", "week", "month", "year"] = "day"
     keywords: list[str] = Field(default_factory=list)
+    account: str | None = None
     min_drama_score: float = Field(default=70, ge=0, le=100)
+    has_video: bool | None = None
     limit: int = Field(default=20, ge=1, le=100)
 
 

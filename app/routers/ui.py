@@ -50,6 +50,101 @@ def _source_counts(db: Session) -> dict[str, int]:
     return {name: count for name, count in rows}
 
 
+def _download_controls_script() -> str:
+    return """
+<script>
+function setDownloadMessage(text, kind = "") {
+  const message = document.getElementById("message");
+  if (!message) return;
+  message.hidden = false;
+  message.className = "message" + (kind ? " " + kind : "");
+  message.textContent = text;
+}
+
+function staticDownloadSummary(data) {
+  if (data.status === "success") {
+    const count = (data.files || []).length;
+    return `Downloaded ${count} file${count === 1 ? "" : "s"} to ${data.host_dir || data.download_dir}.`;
+  }
+  const detail = (data.stderr_tail || data.stdout_tail || "yt-dlp could not resolve this URL.").trim();
+  return `Download failed for item #${data.item_id}: ${detail}`;
+}
+
+async function downloadStaticItem(itemId, button, showResult = true) {
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = "Downloading...";
+  try {
+    const response = await fetch(`/downloads/items/${itemId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || data.error || "Download failed");
+    const succeeded = data.status === "success";
+    button.textContent = succeeded ? "Downloaded" : "Retry";
+    if (showResult) setDownloadMessage(staticDownloadSummary(data), succeeded ? "success" : "error");
+    return { succeeded, fileCount: (data.files || []).length };
+  } catch (error) {
+    button.textContent = "Retry";
+    if (showResult) setDownloadMessage(error.message, "error");
+    return { succeeded: false, fileCount: 0 };
+  } finally {
+    button.disabled = false;
+    if (button.textContent === "Downloading...") button.textContent = originalText;
+  }
+}
+
+async function downloadAllStaticItems(button) {
+  const itemButtons = [...document.querySelectorAll("[data-download-id]")];
+  const uniqueButtons = [...new Map(itemButtons.map((itemButton) => [itemButton.dataset.downloadId, itemButton])).values()];
+  if (!uniqueButtons.length) {
+    setDownloadMessage("No clips are shown to download.", "error");
+    return;
+  }
+  const originalText = button.textContent;
+  let nextIndex = 0;
+  let completed = 0;
+  let succeeded = 0;
+  let fileCount = 0;
+  button.disabled = true;
+  const worker = async () => {
+    while (nextIndex < uniqueButtons.length) {
+      const itemButton = uniqueButtons[nextIndex++];
+      const result = await downloadStaticItem(itemButton.dataset.downloadId, itemButton, false);
+      completed += 1;
+      succeeded += result.succeeded ? 1 : 0;
+      fileCount += result.fileCount;
+      button.textContent = `Downloading ${completed}/${uniqueButtons.length}`;
+      setDownloadMessage(`Downloading ${completed} of ${uniqueButtons.length} shown clips...`);
+    }
+  };
+  try {
+    await Promise.all(Array.from({ length: Math.min(2, uniqueButtons.length) }, worker));
+    const failed = uniqueButtons.length - succeeded;
+    const summary = `Finished: ${succeeded} of ${uniqueButtons.length} clips downloaded (${fileCount} file${fileCount === 1 ? "" : "s"}) to data/downloads.${failed ? ` ${failed} failed; use Retry on those cards.` : ""}`;
+    setDownloadMessage(summary, failed ? "error" : "success");
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
+  }
+}
+
+document.addEventListener("click", (event) => {
+  const downloadAllButton = event.target.closest("[data-download-all]");
+  if (downloadAllButton) {
+    downloadAllStaticItems(downloadAllButton);
+    return;
+  }
+  const button = event.target.closest("[data-download-id]");
+  if (!button) return;
+  downloadStaticItem(button.dataset.downloadId, button);
+});
+</script>
+"""
+
+
 @router.get("/ui", response_class=HTMLResponse)
 def dashboard(db: Session = Depends(get_db)):
     latest = latest_ranking_subquery(db)
@@ -78,16 +173,50 @@ def dashboard(db: Session = Depends(get_db)):
   <div><strong>{counts.get("reddit", 0)}</strong><span>Reddit clips</span></div>
   <div><strong>{counts.get("x", 0)}</strong><span>X posts</span></div>
 </section>
-<section class="panel">
-  <h2>Collect</h2>
-  <div class="actions">
-    <button data-collect="/collect/reddit">Collect Reddit</button>
-    <button data-collect="/collect/x">Collect X</button>
-    <button data-collect="/collect/all">Collect All</button>
-  </div>
-  <p class="muted">Latest collection run: {html.escape(latest_run_text)}</p>
-  <div id="message" class="message" hidden></div>
+<section class="research-grid">
+  <form id="research-form" class="panel research-panel">
+    <div class="panel-head">
+      <h2>Source</h2>
+      <span class="pill">free web search</span>
+    </div>
+    <div class="research-fields">
+      <label>Target<select id="source-choice"><option value="reddit">Reddit</option><option value="x">X / Twitter</option><option value="all">Both</option></select></label>
+      <label>Subreddit<input id="subreddit" value="{html.escape(get_settings().default_subreddit)}" placeholder="LivestreamFail"></label>
+      <label>Reddit URL<input id="reddit-url" placeholder="https://www.reddit.com/r/..."></label>
+      <label>X account optional<input id="x-account" placeholder="@DramaAlert"></label>
+      <label>Person or topic<input id="x-person" placeholder="Hasan debate"></label>
+      <label class="wide">X URLs<textarea id="x-urls" rows="3" placeholder="https://x.com/user/status/..."></textarea></label>
+      <label class="wide">X archive path<input id="x-archive-path" placeholder="/data/x-archive or /data/x-archive/data/tweets.js"></label>
+      <p class="field-note wide">Free web search uses DuckDuckGo and fallback result pages to find direct X/Twitter status links automatically, then imports those posts without paid search APIs.</p>
+      <label>Reddit mode<select id="reddit-mode"><option value="hot">hot</option><option value="new">new</option><option value="rising">rising</option><option value="top_day">top day</option><option value="top_week">top week</option></select></label>
+      <label>Time window<select id="time-window"><option value="day">day</option><option value="week">week</option><option value="month">month</option><option value="year">this year</option></select></label>
+      <label>Minimum score<input id="min-score" type="number" min="0" max="100" value="0"></label>
+      <label>Limit<input id="research-limit" type="number" min="1" max="5000" value="10"></label>
+      <label class="checkline"><input id="only-video" type="checkbox" checked> Videos only</label>
+      <label class="checkline"><input id="web-search" type="checkbox" checked> Free web search</label>
+      <label class="checkline"><input id="deep-search" type="checkbox"> Deep search / more results</label>
+    </div>
+  </form>
+  <section class="panel prompt-panel">
+    <div class="panel-head">
+      <h2>Hermes Prompt</h2>
+      <a class="button ghost small-button" href="http://127.0.0.1:9119" target="_blank" rel="noreferrer">Open Hermes</a>
+    </div>
+    <textarea id="hermes-request" rows="8" placeholder="Give me links of clips about a specific person from this subreddit or X account."></textarea>
+    <div class="actions command-row">
+      <button id="run-research" type="button">Collect + Find</button>
+      <button id="collect-only" type="button" class="secondary">Collect Only</button>
+      <button id="copy-hermes" type="button" class="secondary">Copy Hermes Prompt</button>
+      <button id="copy-urls" type="button" class="secondary">Copy URLs</button>
+      <button id="copy-download-command" type="button" class="secondary">Copy yt-dlp Command</button>
+      <button id="download-all" type="button" class="secondary">Download all shown</button>
+    </div>
+    <p class="muted">Latest collection run: {html.escape(latest_run_text)}</p>
+    <div id="message" class="message" hidden></div>
+    <pre id="hermes-handoff" class="handoff" hidden></pre>
+  </section>
 </section>
+<section id="research-results" class="clip-list"></section>
 <section class="panel">
   <h2>Quick Links</h2>
   <div class="linkgrid">
@@ -98,30 +227,358 @@ def dashboard(db: Session = Depends(get_db)):
   </div>
 </section>
 <script>
-for (const button of document.querySelectorAll("[data-collect]")) {{
-  button.addEventListener("click", async () => {{
-    const message = document.getElementById("message");
-    const old = button.textContent;
-    button.disabled = true;
-    button.textContent = "Collecting...";
-    message.hidden = false;
-    message.className = "message";
-    message.textContent = "Collection is running. This can take a little while.";
-    try {{
-      const response = await fetch(button.dataset.collect, {{ method: "POST", headers: {{ "Content-Type": "application/json" }}, body: "{{}}" }});
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Collection failed");
-      message.className = "message success";
-      message.textContent = "Finished: " + JSON.stringify(data);
-    }} catch (error) {{
-      message.className = "message error";
-      message.textContent = error.message;
-    }} finally {{
-      button.disabled = false;
-      button.textContent = old;
-    }}
-  }});
+const stopWords = new Set(["about", "after", "also", "and", "are", "clip", "clips", "find", "for", "from", "give", "links", "me", "only", "person", "specific", "streamer", "streamers", "that", "the", "this", "to", "video", "videos", "want", "what", "with"]);
+const message = document.getElementById("message");
+const results = document.getElementById("research-results");
+const handoff = document.getElementById("hermes-handoff");
+let currentResults = [];
+
+function esc(value) {{
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({{ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }}[char]));
 }}
+
+function splitLines(value) {{
+  return value.split(/[\\n,]+/).map((item) => item.trim()).filter(Boolean);
+}}
+
+function promptKeywords() {{
+  const prompt = document.getElementById("hermes-request").value;
+  const person = document.getElementById("x-person").value;
+  const tokens = prompt.toLowerCase().match(/[a-z0-9_@.-]+/g) || [];
+  const personTokens = person.toLowerCase().match(/[a-z0-9_@.-]+/g) || [];
+  return [...new Set([...personTokens, ...tokens].map((token) => token.replace(/^@/, "")).filter((token) => token.length > 2 && !stopWords.has(token)))].slice(0, 8);
+}}
+
+function sourceChoice() {{
+  return document.getElementById("source-choice").value;
+}}
+
+function rawResearchLimit() {{
+  return Math.max(1, Number(document.getElementById("research-limit").value || 10));
+}}
+
+function deepSearchEnabled() {{
+  return document.getElementById("deep-search").checked;
+}}
+
+function activeLimit(maximum = 100) {{
+  const limit = rawResearchLimit();
+  if (deepSearchEnabled()) return Math.min(maximum, Math.max(25, limit));
+  return Math.min(10, limit);
+}}
+
+function activeXPageLimit() {{
+  const limit = rawResearchLimit();
+  if (deepSearchEnabled()) return Math.min(100, Math.max(25, limit));
+  return 10;
+}}
+
+function showMessage(text, kind = "") {{
+  message.hidden = false;
+  message.className = "message" + (kind ? " " + kind : "");
+  message.textContent = text;
+}}
+
+function setBusy(isBusy) {{
+  for (const button of document.querySelectorAll("#run-research, #collect-only, #copy-hermes, #copy-urls, #copy-download-command, #download-all")) {{
+    button.disabled = isBusy;
+  }}
+}}
+
+function collectPayloads() {{
+  const source = sourceChoice();
+  const archiveLimit = activeLimit(5000);
+  const webSearchLimit = activeLimit();
+  const xPageLimit = activeXPageLimit();
+  const redditLimit = activeLimit();
+  const redditComments = deepSearchEnabled() ? 5 : 0;
+  const prompt = document.getElementById("hermes-request").value.trim();
+  const payloads = [];
+  if (source === "reddit" || source === "all") {{
+    const subreddit = document.getElementById("subreddit").value.trim();
+    const redditUrl = document.getElementById("reddit-url").value.trim();
+    payloads.push(["/collect/reddit", {{
+      source_mode: "web",
+      subreddit: redditUrl ? null : subreddit,
+      url: redditUrl || null,
+      mode: document.getElementById("reddit-mode").value,
+      limit: redditLimit,
+      top_comments_limit: redditComments
+    }}]);
+  }}
+  if (source === "x" || source === "all") {{
+    const account = document.getElementById("x-account").value.trim().replace(/^@/, "");
+    const person = document.getElementById("x-person").value.trim();
+    const xUrls = splitLines(document.getElementById("x-urls").value);
+    const archivePath = document.getElementById("x-archive-path").value.trim();
+    const useWebSearch = document.getElementById("web-search").checked && person && !archivePath;
+    if (archivePath) {{
+      payloads.push(["/collect/x/archive", {{
+        path: archivePath,
+        account: account || null,
+        limit: archiveLimit
+      }}]);
+    }}
+    if (useWebSearch) {{
+      payloads.push(["/collect/x/from-web-search", {{
+        account: account || null,
+        person,
+        topic: person,
+        search_provider: "web",
+        limit: webSearchLimit
+      }}]);
+    }}
+    const shouldUseXWeb = (!archivePath && !useWebSearch) || xUrls.length;
+    if (shouldUseXWeb) {{
+      payloads.push(["/collect/x", {{
+      source_mode: "web",
+      accounts: account ? [account] : null,
+      urls: xUrls,
+      query: prompt || null,
+      limit: xPageLimit
+    }}]);
+    }}
+  }}
+  return payloads;
+}}
+
+async function postJson(url, payload) {{
+  const response = await fetch(url, {{ method: "POST", headers: {{ "Content-Type": "application/json" }}, body: JSON.stringify(payload) }});
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.detail || data.error || "Request failed");
+  return data;
+}}
+
+function searchPayload() {{
+  const searchLimit = activeLimit();
+  const account = document.getElementById("x-account").value.trim().replace(/^@/, "");
+  return {{
+    source: sourceChoice(),
+    time_window: document.getElementById("time-window").value,
+    keywords: promptKeywords(),
+    account: account || null,
+    min_drama_score: Number(document.getElementById("min-score").value || 0),
+    has_video: document.getElementById("only-video").checked ? true : null,
+    limit: searchLimit
+  }};
+}}
+
+function buildHandoffPrompt(payload) {{
+  const source = sourceChoice();
+  const subreddit = document.getElementById("subreddit").value.trim();
+  const redditUrl = document.getElementById("reddit-url").value.trim();
+  const account = document.getElementById("x-account").value.trim();
+  const person = document.getElementById("x-person").value.trim();
+  const xUrls = splitLines(document.getElementById("x-urls").value);
+  const archivePath = document.getElementById("x-archive-path").value.trim();
+  const userPrompt = document.getElementById("hermes-request").value.trim();
+  return [
+    "Use the local Drama Clip Scout API at http://drama-clip-scout:8787/agent/search-clips.",
+    `User request: ${{userPrompt || "Find the strongest relevant clip leads and return links."}}`,
+    `Source: ${{source}}`,
+    subreddit ? `Subreddit: r/${{subreddit}}` : "",
+    redditUrl ? `Reddit URL: ${{redditUrl}}` : "",
+    account ? `X account: ${{account}}` : "",
+    person ? `Person/topic: ${{person}}` : "",
+    `Search mode: ${{deepSearchEnabled() ? "deep" : "fast"}}`,
+    xUrls.length ? `X URLs: ${{xUrls.join(", ")}}` : "",
+    archivePath ? `X archive path: ${{archivePath}}` : "",
+    `Search payload: ${{JSON.stringify(payload)}}`,
+    "Return direct links, titles, source, score, and a short reason. Treat results as leads, not confirmed claims."
+  ].filter(Boolean).join("\\n");
+}}
+
+function renderResults(items) {{
+  currentResults = items;
+  if (!items.length) {{
+    results.innerHTML = '<section class="panel empty-state">No matching leads found yet.</section>';
+    return;
+  }}
+  results.innerHTML = items.map((item) => `
+    <article class="clip-card result-card">
+      <div class="thumbwrap">${{item.thumbnail ? `<img src="${{esc(item.thumbnail)}}" alt="thumbnail">` : '<div class="thumb empty">No thumbnail</div>'}}</div>
+      <div class="clip-main">
+        <div class="row"><span class="badge">${{esc(item.source)}}</span><span class="label">${{esc(item.potential_label)}}</span><strong>${{esc(item.drama_score)}}</strong></div>
+        <h2>${{esc(item.title_or_text)}}</h2>
+        <p>${{esc(item.reasoning)}}</p>
+        <p class="muted">${{esc(item.created_time || "unknown time")}}</p>
+        <div class="actions small">
+          <a class="button" href="${{esc(item.url)}}" target="_blank" rel="noreferrer">Open original</a>
+          <a class="button ghost" href="/ui/clips/${{item.id}}">View details</a>
+          <button class="secondary download-button" type="button" data-download-id="${{esc(item.id)}}">Download</button>
+        </div>
+      </div>
+    </article>
+  `).join("");
+}}
+
+function resultUrls() {{
+  return [...new Set(currentResults.map((item) => item.url).filter(Boolean))];
+}}
+
+function dockerDownloadCommand(urls) {{
+  return [
+    "cat <<'URLS' | docker exec -i drama-clip-scout sh -lc 'mkdir -p /data/downloads && yt-dlp -P /data/downloads -a -'",
+    ...urls,
+    "URLS"
+  ].join("\\n");
+}}
+
+function downloadSummary(data) {{
+  if (data.status === "success") {{
+    const count = (data.files || []).length;
+    return `Downloaded ${{count}} file${{count === 1 ? "" : "s"}} to ${{data.host_dir || data.download_dir}}.`;
+  }}
+  const detail = (data.stderr_tail || data.stdout_tail || "yt-dlp could not resolve this URL.").trim();
+  return `Download failed for item #${{data.item_id}}: ${{detail}}`;
+}}
+
+async function downloadItem(itemId, button) {{
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = "Downloading...";
+  try {{
+    const data = await postJson(`/downloads/items/${{itemId}}`, {{}});
+    showMessage(downloadSummary(data), data.status === "success" ? "success" : "error");
+  }} catch (error) {{
+    showMessage(error.message, "error");
+  }} finally {{
+    button.disabled = false;
+    button.textContent = originalText;
+  }}
+}}
+
+async function downloadAllResults(button) {{
+  const itemIds = [...new Set(currentResults.map((item) => String(item.id)).filter(Boolean))];
+  if (!itemIds.length) {{
+    showMessage("No results are shown to download. Run Collect + Find first.", "error");
+    return;
+  }}
+  const originalText = button.textContent;
+  let nextIndex = 0;
+  let completed = 0;
+  let succeeded = 0;
+  let fileCount = 0;
+  button.disabled = true;
+  const worker = async () => {{
+    while (nextIndex < itemIds.length) {{
+      const itemId = itemIds[nextIndex++];
+      const itemButton = [...results.querySelectorAll("[data-download-id]")].find((candidate) => candidate.dataset.downloadId === itemId);
+      if (itemButton) {{
+        itemButton.disabled = true;
+        itemButton.textContent = "Downloading...";
+      }}
+      try {{
+        const data = await postJson(`/downloads/items/${{itemId}}`, {{}});
+        const success = data.status === "success";
+        succeeded += success ? 1 : 0;
+        fileCount += success ? (data.files || []).length : 0;
+        if (itemButton) itemButton.textContent = success ? "Downloaded" : "Retry";
+      }} catch (_error) {{
+        if (itemButton) itemButton.textContent = "Retry";
+      }} finally {{
+        if (itemButton) itemButton.disabled = false;
+        completed += 1;
+        button.textContent = `Downloading ${{completed}}/${{itemIds.length}}`;
+        showMessage(`Downloading ${{completed}} of ${{itemIds.length}} shown clips...`);
+      }}
+    }}
+  }};
+  try {{
+    await Promise.all(Array.from({{ length: Math.min(2, itemIds.length) }}, worker));
+    const failed = itemIds.length - succeeded;
+    const summary = `Finished: ${{succeeded}} of ${{itemIds.length}} clips downloaded (${{fileCount}} file${{fileCount === 1 ? "" : "s"}}) to data/downloads.${{failed ? ` ${{failed}} failed; use Retry on those cards.` : ""}}`;
+    showMessage(summary, failed ? "error" : "success");
+  }} finally {{
+    button.disabled = false;
+    button.textContent = originalText;
+  }}
+}}
+
+async function collectSources() {{
+  const completed = [];
+  for (const [url, payload] of collectPayloads()) {{
+    completed.push(await postJson(url, payload));
+  }}
+  const source = sourceChoice();
+  const shouldTryRedditXLinks = (source === "x" || source === "all") && completed.some((item) => item.source_mode === "web" && (item.items_collected || 0) === 0);
+  if (shouldTryRedditXLinks) {{
+    showMessage("X timeline was not exposed. Scanning collected Reddit leads for direct X status links...");
+    const account = document.getElementById("x-account").value.trim().replace(/^@/, "");
+    completed.push(await postJson("/collect/x/from-reddit", {{
+      query: document.getElementById("hermes-request").value.trim() || null,
+      accounts: account ? [account] : null,
+      time_window: document.getElementById("time-window").value,
+      limit: activeLimit()
+    }}));
+  }}
+  return completed;
+}}
+
+async function runResearch(onlyCollect = false) {{
+  setBusy(true);
+  currentResults = [];
+  results.innerHTML = "";
+  handoff.hidden = true;
+  showMessage(onlyCollect ? "Collecting selected sources..." : "Collecting selected sources and searching leads...");
+  try {{
+    const collected = await collectSources();
+    const notes = collected.map((item) => item.note).filter(Boolean);
+    const noteText = notes.length ? " " + notes.join(" ") : "";
+    if (onlyCollect) {{
+      showMessage("Finished: " + JSON.stringify(collected) + noteText, "success");
+      return;
+    }}
+    const payload = searchPayload();
+    const data = await postJson("/agent/search-clips", payload);
+    renderResults(data.results || []);
+    handoff.textContent = buildHandoffPrompt(payload);
+    handoff.hidden = false;
+    showMessage(`Finished: collected ${{collected.map((item) => item.items_collected || 0).reduce((a, b) => a + b, 0)}} items and found ${{(data.results || []).length}} leads.${{noteText}}`, "success");
+  }} catch (error) {{
+    showMessage(error.message, "error");
+  }} finally {{
+    setBusy(false);
+  }}
+}}
+
+document.getElementById("run-research").addEventListener("click", () => runResearch(false));
+document.getElementById("collect-only").addEventListener("click", () => runResearch(true));
+document.getElementById("copy-hermes").addEventListener("click", async () => {{
+  const payload = searchPayload();
+  const text = buildHandoffPrompt(payload);
+  handoff.textContent = text;
+  handoff.hidden = false;
+  await navigator.clipboard.writeText(text);
+  showMessage("Hermes prompt copied.", "success");
+}});
+document.getElementById("copy-urls").addEventListener("click", async () => {{
+  const urls = resultUrls();
+  if (!urls.length) {{
+    showMessage("No result URLs to copy yet. Run Collect + Find first.", "error");
+    return;
+  }}
+  await navigator.clipboard.writeText(urls.join("\\n"));
+  showMessage(`Copied ${{urls.length}} result URL${{urls.length === 1 ? "" : "s"}}.`, "success");
+}});
+document.getElementById("copy-download-command").addEventListener("click", async () => {{
+  const urls = resultUrls();
+  if (!urls.length) {{
+    showMessage("No result URLs to download yet. Run Collect + Find first.", "error");
+    return;
+  }}
+  const command = dockerDownloadCommand(urls);
+  handoff.textContent = command;
+  handoff.hidden = false;
+  await navigator.clipboard.writeText(command);
+  showMessage(`Copied Docker yt-dlp command for ${{urls.length}} URL${{urls.length === 1 ? "" : "s"}}.`, "success");
+}});
+document.getElementById("download-all").addEventListener("click", (event) => downloadAllResults(event.currentTarget));
+results.addEventListener("click", (event) => {{
+  const button = event.target.closest("[data-download-id]");
+  if (!button) return;
+  downloadItem(button.dataset.downloadId, button);
+}});
 </script>
 """
     return page("Dashboard", body)
@@ -131,13 +588,14 @@ for (const button of document.querySelectorAll("[data-collect]")) {{
 def clips_page(
     source: str = Query("all", pattern="^(reddit|x|all)$"),
     min_drama_score: float = Query(0, ge=0, le=100),
-    time_window: str = Query("week", pattern="^(day|week|all)$"),
+    time_window: str = Query("week", pattern="^(day|week|month|year|all)$"),
     has_video: bool | None = None,
     keyword: str | None = None,
+    account: str | None = None,
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
-    rows = query_ranked_items(db, source, min_drama_score, time_window, has_video, keyword, limit)
+    rows = query_ranked_items(db, source, min_drama_score, time_window, has_video, keyword, account, limit)
     cards = []
     for item, ranking in rows:
         data = serialize_item(item, ranking)
@@ -155,6 +613,7 @@ def clips_page(
     <div class="actions small">
       <a class="button" href="{html.escape(data["url"])}" target="_blank" rel="noreferrer">Open original</a>
       <a class="button ghost" href="/ui/clips/{data["id"]}">View details</a>
+      <button class="secondary" type="button" data-download-id="{data["id"]}">Download</button>
     </div>
   </div>
 </article>"""
@@ -166,17 +625,21 @@ def clips_page(
   <form class="filters" method="get">
     <label>Source<select name="source"><option {"selected" if source == "all" else ""}>all</option><option {"selected" if source == "reddit" else ""}>reddit</option><option {"selected" if source == "x" else ""}>x</option></select></label>
     <label>Minimum score<input type="number" name="min_drama_score" min="0" max="100" value="{min_drama_score}"></label>
-    <label>Time window<select name="time_window"><option {"selected" if time_window == "day" else ""}>day</option><option {"selected" if time_window == "week" else ""}>week</option><option {"selected" if time_window == "all" else ""}>all</option></select></label>
+    <label>Time window<select name="time_window"><option {"selected" if time_window == "day" else ""}>day</option><option {"selected" if time_window == "week" else ""}>week</option><option {"selected" if time_window == "month" else ""}>month</option><option value="year" {"selected" if time_window == "year" else ""}>this year</option><option {"selected" if time_window == "all" else ""}>all</option></select></label>
     <label>Has video<select name="has_video"><option value="" {"selected" if has_video is None else ""}>any</option><option value="true" {"selected" if has_video is True else ""}>true</option><option value="false" {"selected" if has_video is False else ""}>false</option></select></label>
     <label>Keyword<input name="keyword" value="{html.escape(keyword or "")}" placeholder="search text"></label>
+    <label>X account<input name="account" value="{html.escape(account or "")}" placeholder="Awk20000"></label>
     <label>Limit<input type="number" name="limit" min="1" max="200" value="{limit}"></label>
     <button type="submit">Apply</button>
+    <button type="button" class="secondary" data-download-all>Download all shown</button>
   </form>
+  <div id="message" class="message" hidden></div>
 </section>
 {empty}
 <section class="clip-list">
   {''.join(cards)}
 </section>
+{_download_controls_script()}
 """
     return page("Clips", body)
 
@@ -209,7 +672,8 @@ def clip_detail_page(item_id: int, db: Session = Depends(get_db)):
   <h1>{html.escape(data["title_or_text"])}</h1>
   {thumbnail}
   <p>{html.escape(data["reasoning"])}</p>
-  <p><a class="button" href="{html.escape(data["url"])}" target="_blank" rel="noreferrer">Open original post</a></p>
+  <p class="actions"><a class="button" href="{html.escape(data["url"])}" target="_blank" rel="noreferrer">Open original post</a><button class="secondary" type="button" data-download-id="{data["id"]}">Download</button></p>
+  <div id="message" class="message" hidden></div>
   <h2>Metrics</h2>
   <pre>{html.escape(json.dumps(data["metrics"], indent=2, ensure_ascii=True))}</pre>
   <h2>Media</h2>
@@ -221,6 +685,7 @@ def clip_detail_page(item_id: int, db: Session = Depends(get_db)):
     <pre>{html.escape(json.dumps(data.get("raw_metadata", {}), indent=2, ensure_ascii=True))}</pre>
   </details>
 </section>
+{_download_controls_script()}
 """
     return page("Clip Details", body)
 

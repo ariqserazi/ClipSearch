@@ -16,7 +16,9 @@ def agent_search_clips(request: AgentSearchRequest, db: Session = Depends(get_db
         source=request.source,
         min_drama_score=request.min_drama_score,
         time_window=request.time_window,
+        has_video=request.has_video,
         keyword=keyword,
+        account=request.account,
         limit=request.limit,
     )
     results = []
