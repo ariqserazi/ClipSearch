@@ -5,5 +5,7 @@ __pycache__/
 .venv/
 data/*.db
 data/*.db-*
+data/downloads/reddit/
+data/downloads/x/
 *.log
 .DS_Store

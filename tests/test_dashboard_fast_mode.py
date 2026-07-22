@@ -17,6 +17,7 @@ class DashboardFastModeTests(unittest.TestCase):
 
         html = dashboard(db).body.decode()
 
+        self.assertIn('<link rel="icon" type="image/svg+xml" href="/favicon.svg">', html)
         self.assertIn('id="research-limit" type="number" min="1" max="5000" value="10"', html)
         self.assertIn('id="deep-search" type="checkbox"', html)
         self.assertIn("Deep search / more results", html)

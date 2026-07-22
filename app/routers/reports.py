@@ -18,6 +18,7 @@ def latest_report_page(db: Session = Depends(get_db)):
     markdown = markdown_report(db)
     html = (
         "<!doctype html><html><head><title>Latest Report</title>"
+        "<link rel='icon' type='image/svg+xml' href='/favicon.svg'>"
         "<link rel='stylesheet' href='/ui.css'></head><body>"
         "<main class='shell'><nav><a href='/ui'>Dashboard</a><a href='/ui/clips'>Clips</a>"
         "<a href='/ui/runs'>Runs</a><a href='/ui/settings'>Settings</a></nav>"

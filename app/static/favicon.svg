@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Drama Clip Scout">
+  <rect width="64" height="64" rx="14" fill="#181c20"/>
+  <circle cx="27" cy="26" r="16" fill="#20262b" stroke="#4cc9a7" stroke-width="6"/>
+  <path d="M22 17.5 37 26 22 34.5Z" fill="#eef2f3"/>
+  <path d="M39 38 52 51" fill="none" stroke="#4cc9a7" stroke-width="7" stroke-linecap="round"/>
+</svg>

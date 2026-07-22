@@ -1,5 +1,7 @@
+from pathlib import Path
+
 from fastapi import FastAPI
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 
 from app.database import init_db
 from app.routers import agent, clips, collect, downloads, health, reports, ui
@@ -10,6 +12,8 @@ app = FastAPI(
     version="0.1.0",
 )
 
+FAVICON_PATH = Path(__file__).with_name("static") / "favicon.svg"
+
 
 @app.on_event("startup")
 def startup() -> None:
@@ -19,6 +23,12 @@ def startup() -> None:
 @app.get("/", include_in_schema=False)
 def root():
     return {"service": "drama-clip-scout", "ui": "/ui", "docs": "/docs", "health": "/health"}
+
+
+@app.get("/favicon.svg", response_class=FileResponse, include_in_schema=False)
+@app.get("/favicon.ico", response_class=FileResponse, include_in_schema=False)
+def favicon():
+    return FileResponse(FAVICON_PATH, media_type="image/svg+xml")
 
 
 @app.get("/ui.css", response_class=PlainTextResponse, include_in_schema=False)
