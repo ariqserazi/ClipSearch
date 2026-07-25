@@ -1,319 +1,685 @@
 # Drama Clip Scout
 
-Drama Clip Scout is a separate local Docker app that collects public links and metadata for possible streamer drama clip leads. It uses the official Reddit API and official X API, ranks results by potential usefulness, and exposes a local FastAPI API that Hermes can call.
+Drama Clip Scout is a local Docker application for finding, ranking, reviewing, and optionally downloading public streamer clip leads. It collects public metadata and links from Reddit, X/Twitter, and Kiwi Farms, stores them in SQLite, and exposes both a browser dashboard and a FastAPI API that Hermes can call.
 
-It does not replace Hermes. Your existing Hermes Docker setup stays in `hermes-docker`, keeps using its own container named `hermes`, and keeps its own data in `~/.hermes`.
+Drama Clip Scout is a research aid, not a fact-checker. Every result is a lead to review against its linked source before making a claim.
 
-## Two Browser UIs
+## What It Does
 
-Hermes Dashboard:
+- Collects Reddit posts through public web pages or the Reddit API.
+- Discovers X/Twitter status URLs through free web search, direct URLs, Reddit links, the X API, or an official X archive.
+- Searches public Kiwi Farms results through the configured Kiwifarms Bridge, with a legacy direct-search fallback.
+- Extracts supported media links from public source metadata.
+- Distinguishes verified video/media results from photos and unverified status leads.
+- Ranks leads from 0–100 using engagement, recency, discussion activity, keywords, media, and configured streamer names.
+- Filters by source, time window, score, keywords, X account, and verified-video status.
+- Generates browser and Markdown reports.
+- Copies links and ready-to-run `yt-dlp` commands.
+- Downloads mixed batches of pasted X/Twitter, YouTube, and Reddit video links without requiring prior collection.
+- Optionally downloads media into the local `data/downloads/` directory.
+- Gives Hermes a structured `/agent/search-clips` endpoint.
 
-http://127.0.0.1:9119
+## Safety and Scope
 
-Drama Clip Scout UI:
+- The web service binds only to `127.0.0.1:8787`.
+- The container runs as a non-root user with `no-new-privileges`.
+- Collection stores links and metadata; it does not download videos unless you press a download button or call the download endpoint.
+- Unverified X search results are not labeled as videos.
+- Common email, phone, street-address, family-name, and IP-address patterns are redacted from stored Kiwi Farms snippets.
+- Kiwi Farms collection does not log in, solve CAPTCHAs, or bypass access controls.
+- Setup, update, stop, and container-reset scripts do not delete Hermes data.
+- Never delete `~/.hermes` for this project. That directory belongs to Hermes and may contain its configuration, memory, sessions, skills, and API keys.
 
-http://127.0.0.1:8787/ui
+## Requirements
 
-Hermes is where you ask the agent questions. Drama Clip Scout UI is where you manually collect, browse, filter, and review ranked clip leads.
+- Docker Desktop or another Docker installation with Docker Compose.
+- A checkout of this repository.
+- Optional: an existing Docker container named `hermes` for Hermes integration.
+- Optional: Reddit and X API credentials for their official API paths.
 
-FastAPI docs:
+The public web-search paths work without paid search credentials, although source sites may limit what they expose to logged-out requests.
 
-http://127.0.0.1:8787/docs
+## Quick Start
 
-## Docker Networking
+From the repository directory:
 
-Drama Clip Scout uses an external Docker network named `drama-net`.
+```bash
+./setup.sh
+./start.sh
+```
 
-The setup script:
+`setup.sh`:
 
-1. Creates `drama-net` if it does not exist.
-2. Checks whether a Docker container named `hermes` exists.
-3. Connects `hermes` to `drama-net` if it is not already connected.
-4. Leaves Hermes data, config, memory, sessions, skills, and API keys alone.
+1. Creates the external Docker network `drama-net` if necessary.
+2. Connects an existing container named `hermes` to that network.
+3. Creates `.env` from `.env.example` only when `.env` is missing.
+4. Creates the local `data/` directory.
+5. Leaves existing `.env`, Hermes, and `~/.hermes` data unchanged.
 
-Hermes should call Drama Clip Scout from inside Docker at:
+After startup, open:
 
+- [Drama Clip Scout dashboard](http://127.0.0.1:8787/ui)
+- [FastAPI documentation](http://127.0.0.1:8787/docs)
+- [Hermes dashboard](http://127.0.0.1:9119), when Hermes is running
+
+## URLs and Docker Networking
+
+| Purpose | URL |
+| --- | --- |
+| Drama Clip Scout dashboard | `http://127.0.0.1:8787/ui` |
+| Drama Clip Scout API | `http://127.0.0.1:8787` |
+| FastAPI docs | `http://127.0.0.1:8787/docs` |
+| Hermes dashboard on the host | `http://127.0.0.1:9119` |
+| Hermes Gateway on the host | `http://127.0.0.1:8642` |
+| Drama Clip Scout from Hermes | `http://drama-clip-scout:8787` |
+| Hermes Gateway from Drama Clip Scout | `http://hermes:8642` |
+
+Inside the Hermes container, do not use `127.0.0.1:8787` for Drama Clip Scout. Container-local `127.0.0.1` points back to Hermes. Use:
+
+```text
 http://drama-clip-scout:8787/agent/search-clips
+```
 
-Do not use `http://127.0.0.1:8787` from inside the Hermes container. Inside Hermes, `127.0.0.1` points back to the Hermes container itself.
+The Docker Compose service mounts `./data` on the host to `/data` in the container and joins the external `drama-net` network.
 
-If Drama Clip Scout ever needs to call Hermes Gateway from inside Docker, it can use:
+## Dashboard Guide
 
-http://hermes:8642
+The main dashboard combines collection and filtered search. Enter a prompt, optionally enter a person/topic, choose a target, and press `Collect + Find`.
 
-On your Mac, Drama Clip Scout is bound only to:
+### Target Options
 
-http://127.0.0.1:8787
+| Dashboard target | API source value | Sources included |
+| --- | --- | --- |
+| Reddit | `reddit` | Reddit only |
+| X / Twitter | `x` | X only |
+| Reddit + X | `reddit_x` | Reddit and X; skips Kiwi Farms |
+| Kiwi Farms | `kiwifarms` | Kiwi Farms only |
+| All Sources | `all` | Reddit, X, and Kiwi Farms |
 
-This keeps the service local instead of exposing it publicly.
+`All Sources` and `Kiwi Farms` need either a person/topic or a non-empty prompt so the Kiwi Farms collector has a search query.
 
-## API Credentials
+When an X account is supplied with `Reddit + X` or `All Sources`, the account restriction applies to X results while Reddit results remain eligible.
 
-Drama Clip Scout does not hardcode API keys and does not create a real `.env` with secrets for you.
+### Limit and Search Modes
 
-Copy the example file:
+The dashboard limit has a minimum and default of 25.
+
+| Behavior | Standard mode | Deep search |
+| --- | --- | --- |
+| Default result/collection limit | 25 | 25 |
+| Limits above 25 | Capped at 25 | Allowed up to each endpoint’s maximum |
+| Reddit top comments | Skipped | Up to 5 per collected post |
+| Kiwi Farms request budget | Up to 5 | Up to 25 |
+| Default time window after enabling | Day | Month |
+
+Turning on `Deep search / more results` changes the currently selected default `day` window to `month`. You can choose another time window afterward.
+
+Most network collection and agent-search endpoints allow up to 100 items. Official X archive import allows up to 5,000.
+
+### Videos Only
+
+`Videos only` returns results with verified video/media evidence.
+
+It excludes:
+
+- X photo posts.
+- X status links found by search when X did not expose enough metadata to verify video.
+- Text-only Kiwi Farms results.
+- Other items not marked as video by their source collector.
+
+Clear the checkbox when you also want unverified status leads and text-only source leads.
+
+### Dashboard Actions
+
+- `Collect + Find`: collects selected sources, then searches ranked results.
+- `Collect Only`: collects without running the final ranked search.
+- `Copy Hermes Prompt`: copies a Hermes-ready handoff containing the current filters.
+- `Copy URLs`: copies primary URLs for the displayed results.
+- `Copy yt-dlp Command`: copies downloadable media URLs as a Docker command.
+- `Download all shown`: downloads every displayed result currently marked as downloadable.
+- Per-card `Download`: downloads one result.
+
+Collection failures are isolated by source. A Kiwi Farms outage or one dead X status URL does not discard successful results from the other selected sources or URLs.
+
+### Multi-link Downloader
+
+The dashboard includes one `Multi-link Downloader` panel. Paste up to 100 mixed X/Twitter, YouTube, and Reddit links, one per line, then press `Download links`.
+
+The batch downloader:
+
+- Accepts direct X/Twitter status links, including video, photo, and text-only posts.
+- Saves X photos as their original image files.
+- Saves a PNG tweet-card screenshot when an X post has no downloadable video. Photo posts receive both the original photo and the screenshot.
+- Accepts YouTube watch, Shorts, live, embed, and `youtu.be` links.
+- Accepts Reddit post, `redd.it`, and `v.redd.it` links.
+- Normalizes alternate link formats and removes duplicate videos or posts.
+- Runs up to two downloads concurrently.
+- Reports success or failure for every unique link.
+- Saves every platform’s files together under `./data/downloads/link-downloader/`.
+- Shows each exact filename and path after completion. Use `Save file` to copy an output into the browser's Downloads folder.
+- Replaces the matching saved output on retry so the file and modification time are refreshed.
+- Names files from the media title and appends the platform extractor and video ID to prevent same-title collisions, for example `Video_topic [Youtube-abc123].mp4`.
+
+## User Interface Pages
+
+| Page | URL |
+| --- | --- |
+| Dashboard | `http://127.0.0.1:8787/ui` |
+| Clip browser | `http://127.0.0.1:8787/ui/clips` |
+| Collection runs | `http://127.0.0.1:8787/ui/runs` |
+| Readable report | `http://127.0.0.1:8787/ui/report` |
+| Settings status | `http://127.0.0.1:8787/ui/settings` |
+| Markdown report | `http://127.0.0.1:8787/reports/latest.md` |
+
+The settings page reports values as `configured` or `missing`; it does not display credential values.
+
+## Configuration
+
+Run `./setup.sh` or copy the example manually:
 
 ```bash
 cp .env.example .env
 ```
 
-Then edit `.env` manually and add your credentials.
+Then edit `.env`. Do not commit real credentials.
 
-### Reddit API Credentials
+| Variable | Purpose | Default/example |
+| --- | --- | --- |
+| `REDDIT_CLIENT_ID` | Reddit script-app client ID | empty |
+| `REDDIT_CLIENT_SECRET` | Reddit script-app secret | empty |
+| `REDDIT_USERNAME` | Reddit account for script authentication | empty |
+| `REDDIT_PASSWORD` | Reddit account password for script authentication | empty |
+| `REDDIT_USER_AGENT` | Descriptive Reddit user agent | `drama-clip-scout/0.1 by YOUR_REDDIT_USERNAME` |
+| `X_BEARER_TOKEN` | X API v2 bearer token | empty |
+| `X_TARGET_ACCOUNTS` | Comma-separated default X accounts | empty |
+| `KIWIFARMS_BRIDGE_URL` | Private Kiwifarms Bridge base URL | set in the ignored `.env`; no committed default |
+| `KIWIFARMS_BRIDGE_TIMEOUT_SECONDS` | Bridge request timeout | `75` |
+| `KIWIFARMS_BASE_URL` | Legacy direct-search base URL | `https://kiwifarms.st` |
+| `KIWIFARMS_FALLBACK_BASE_URLS` | Comma-separated legacy fallback URLs | empty |
+| `KIWIFARMS_REQUEST_DELAY_SECONDS` | Delay between legacy direct requests | `1.5` |
+| `KIWIFARMS_MAX_PAGES` | Default Kiwi Farms request budget | `10` |
+| `USER_AGENT` | User agent for public web requests | browser-style default |
+| `OUTBOUND_PROXY_URL` | Optional proxy for outbound public requests | empty |
+| `DATABASE_URL` | SQLAlchemy database URL | `sqlite:////data/clips.db` |
+| `DEFAULT_SUBREDDIT` | Dashboard’s initial subreddit | `LivestreamFail` |
+| `API_HOST` | Container listen address | `0.0.0.0` |
+| `API_PORT` | Container API port | `8787` |
+| `HERMES_GATEWAY_INTERNAL_URL` | Hermes Gateway address inside Docker | `http://hermes:8642` |
+| `KNOWN_STREAMER_NAMES` | Optional comma-separated names that add ranking signals | empty |
 
-1. Go to https://www.reddit.com/prefs/apps.
-2. Click `create another app` or `create app`.
-3. Choose `script`.
-4. Set a name such as `drama-clip-scout`.
-5. Use `http://127.0.0.1:8787` as the redirect URI if Reddit asks for one.
-6. Copy the client ID and client secret into `.env`.
-7. Add your Reddit username and password.
-8. Set a clear user agent, for example:
+### Reddit Credentials
 
-```env
-REDDIT_USER_AGENT=drama-clip-scout/0.1 by your_reddit_username
-```
+Reddit credentials are optional for public-web collection. To configure the official API:
 
-### X API Credentials
+1. Open [Reddit app preferences](https://www.reddit.com/prefs/apps).
+2. Create a `script` app.
+3. Use `http://127.0.0.1:8787` as the redirect URI if Reddit requests one.
+4. Add the client ID, secret, username, password, and a descriptive user agent to `.env`.
 
-1. Go to https://developer.x.com/.
-2. Create or use an existing developer project/app.
-3. Generate a bearer token for X API v2.
-4. Put it in `.env` as `X_BEARER_TOKEN`.
-5. Optionally set comma-separated target accounts:
+The API request field `source_mode` accepts:
 
-```env
-X_TARGET_ACCOUNTS=streamer_one,streamer_two
-```
+- `auto`: use the Reddit API when fully configured, otherwise use public web pages.
+- `api`: require the Reddit API configuration.
+- `web`: use public Reddit pages.
 
-X collection is optional because X API access may require a paid tier.
+The dashboard explicitly uses the public web path.
 
-Without a paid search API, Drama Clip Scout can automatically discover public X/Twitter status links through free public search result pages. It tries DuckDuckGo HTML first, then text-rendered/fallback search pages, then imports or stores direct `x.com/.../status/...` and `twitter.com/.../status/...` links as video leads. This does not require a Google key, a paid search API, a browser bookmarklet, or manual paste.
+### X/Twitter Credentials and Collection Paths
 
-Without an X API token, Drama Clip Scout supports local, non-API paths:
+An X bearer token is optional. If configured, `/collect/x` with `source_mode: "auto"` can use X API v2. The dashboard primarily uses free public discovery and direct public status pages.
 
-1. Free automated web search for X/Twitter status links about a person or topic.
-2. Direct public status URLs in the UI. The app will try to read tweet data exposed in the logged-out page HTML.
-3. Import an official X data archive for an account you control.
+Supported X paths:
 
-For archive import, unzip the X export somewhere under this repo's local `data/` folder. Docker mounts that folder into the app container as `/data`, so a host path such as:
+1. Free web search for public status URLs about a person or topic.
+2. Direct `x.com/.../status/...` or `twitter.com/.../status/...` URLs.
+3. X status URLs found in collected Reddit posts and comments.
+4. X API v2 recent search when a bearer token is configured.
+5. Import from an official X archive owned by the user.
+6. Archive/search-page discovery through the archive-search endpoint.
+
+Free discovery tries public search pages and stores normalized direct status URLs. The collector then attempts to read metadata from each public status page. One failed or deleted status is skipped while remaining URLs continue.
+
+If public metadata exposes an X video-thumbnail marker, the result is classified as video. Generic X media images are classified as photos. If metadata cannot be fetched, the status remains an unverified lead and is excluded by `Videos only`.
+
+For official archive import, place the extracted archive under the repository’s `data/` directory. A host path such as:
 
 ```text
 ./data/x-archive/data/tweets.js
 ```
 
-is entered in the UI or API as:
+is visible inside the container as:
 
 ```text
 /data/x-archive/data/tweets.js
 ```
 
-You can also point at the archive folder, for example `/data/x-archive`; the importer will look for `tweets*.js` or `tweets*.json` in the folder and its `data/` child.
+You can provide the file, `/data/x-archive`, or `/data/x-archive/data`; the importer looks for `tweets*.js` and `tweets*.json`.
 
-The archive endpoint is:
+### Kiwi Farms Public Search
+
+Kiwi Farms does not require credentials in this application. The preferred path uses the standalone [Kiwifarms Bridge](https://github.com/ariqserazi/kiwifarm-Bridge), which performs the ordinary public guest-search flow and returns structured, redacted JSON.
+
+The collector:
+
+- Searches in batches of at most 20.
+- Uses only verified IDs and URLs returned by the source.
+- Optionally fetches verified thread details when the request budget permits.
+- Stores one stable lead per verified result/thread.
+- Extracts supported X, YouTube, Twitch, Reddit, Streamable, TikTok, and direct-video links.
+- Does not recursively crawl outbound media sites.
+
+`KIWIFARMS_MAX_PAGES` is the default bridge request budget, including search and optional enrichment requests. The dashboard explicitly uses up to 5 requests in standard mode and up to 25 in deep mode.
+
+Set `KIWIFARMS_BRIDGE_URL=` to disable the bridge and use the legacy direct public-search client with `KIWIFARMS_BASE_URL` and optional `KIWIFARMS_FALLBACK_BASE_URLS`.
+
+A bridge outage, guest-access error, 403, 429, CAPTCHA, or authentication requirement produces a nonfatal collection result. Reddit and X collection continue.
+
+## Operations
+
+| Command | Effect |
+| --- | --- |
+| `./setup.sh` | Creates the network, optional Hermes connection, `.env`, and `data/` |
+| `./start.sh` | Builds and starts only `drama-clip-scout` |
+| `./update.sh` | Rebuilds and force-recreates only `drama-clip-scout` |
+| `./stop.sh` | Stops only `drama-clip-scout` |
+| `./logs.sh` | Follows the app container logs |
+| `./reset-container.sh` | Removes only the app container; preserves SQLite and Hermes |
+| `./collect_reddit.sh` | Calls `/collect/reddit` with default API values |
+| `./collect_x.sh` | Calls `/collect/x` with default API values |
+| `./collect_all.sh` | Calls `/collect/all`; Kiwi Farms is skipped without a query payload |
+
+## API Reference
+
+Interactive schemas and request forms are available at [http://127.0.0.1:8787/docs](http://127.0.0.1:8787/docs).
+
+### Read and Search Endpoints
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `GET` | `/` | Service and navigation links |
+| `GET` | `/health` | Service and source-configuration status |
+| `GET` | `/clips` | Filtered ranked results |
+| `GET` | `/clips/{item_id}` | One result with comments and raw metadata |
+| `GET` | `/sources` | Stored source records |
+| `GET` | `/runs` | Recent collection runs |
+| `GET` | `/reports/latest.md` | Markdown report |
+| `POST` | `/agent/search-clips` | Structured Hermes-facing search |
+| `POST` | `/rank` | Re-rank all non-removed items |
+
+### Collection Endpoints
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `POST` | `/collect/reddit` | Reddit API or public-web collection |
+| `POST` | `/collect/x` | X API or public-page collection |
+| `POST` | `/collect/kiwifarms` | Public Kiwi Farms query |
+| `POST` | `/collect/all` | Reddit, X, and optional Kiwi Farms collection |
+| `POST` | `/collect/x/from-web-search` | Free public search discovery |
+| `POST` | `/collect/x/from-google-search` | Compatibility alias for free web search |
+| `POST` | `/collect/x/from-reddit` | Discover X status URLs in collected Reddit data |
+| `POST` | `/collect/x/from-archive-search` | Search/archive-page discovery |
+| `POST` | `/collect/x/archive` | Import an official X archive |
+
+### Download Endpoint
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `POST` | `/downloads/items/{item_id}` | Download one item’s media with `yt-dlp` |
+| `POST` | `/downloads/links` | Download up to 100 mixed X/Twitter, YouTube, and Reddit links |
+| `POST` | `/downloads/x-links` | Compatibility alias for the unified link downloader |
+
+### Shared Search Values
+
+Source values:
+
+- `reddit`
+- `x`
+- `reddit_x`
+- `kiwifarms`
+- `all`
+
+Time-window values:
+
+- `day`: last 24 hours
+- `week`: last 7 days
+- `month`: last 30 days
+- `year`: since January 1 of the current year
+- `all`: no created-time cutoff
+
+Items without a known created time remain eligible for bounded time windows.
+
+## API Examples
+
+### Health
+
+```bash
+curl -sS http://127.0.0.1:8787/health
+```
+
+### Collect Reddit
+
+```bash
+curl -sS -X POST http://127.0.0.1:8787/collect/reddit \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "subreddit": "LivestreamFail",
+    "mode": "hot",
+    "source_mode": "web",
+    "limit": 25,
+    "top_comments_limit": 0
+  }'
+```
+
+Reddit modes are `hot`, `new`, `rising`, `top_day`, and `top_week`.
+
+### Discover X Statuses by Topic
+
+```bash
+curl -sS -X POST http://127.0.0.1:8787/collect/x/from-web-search \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "topic": "Streamer University",
+    "search_provider": "web",
+    "limit": 25
+  }'
+```
+
+Optionally include `"account": "Awk20000"` to restrict discovery to one X account.
+
+### Collect Direct X URLs
+
+```bash
+curl -sS -X POST http://127.0.0.1:8787/collect/x \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "source_mode": "web",
+    "urls": [
+      "https://x.com/example/status/1234567890"
+    ],
+    "limit": 25
+  }'
+```
+
+### Import an Official X Archive
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8787/collect/x/archive \
   -H 'Content-Type: application/json' \
-  -d '{"path":"/data/x-archive","account":"your_handle","limit":500}'
+  -d '{
+    "path": "/data/x-archive",
+    "account": "your_handle",
+    "limit": 500
+  }'
 ```
 
-You can discover direct X status URLs through free automated web search by giving a person or topic. The X account is optional; include one when you want to restrict results to one account:
+### Collect Kiwi Farms
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8787/collect/x/from-web-search \
+curl -sS -X POST http://127.0.0.1:8787/collect/kiwifarms \
   -H 'Content-Type: application/json' \
-  -d '{"topic":"Hasan debate","limit":25}'
+  -d '{
+    "query": "Streamer University",
+    "limit": 25,
+    "max_pages": 5
+  }'
 ```
 
-To restrict discovery to one account:
+### Collect All Sources
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8787/collect/x/from-web-search \
+curl -sS -X POST http://127.0.0.1:8787/collect/all \
   -H 'Content-Type: application/json' \
-  -d '{"account":"hasanthehun","topic":"Hasan","limit":25}'
+  -d '{
+    "reddit": {
+      "subreddit": "LivestreamFail",
+      "source_mode": "web",
+      "limit": 25,
+      "top_comments_limit": 0
+    },
+    "x": {
+      "source_mode": "web",
+      "limit": 25
+    },
+    "kiwifarms": {
+      "query": "Streamer University",
+      "limit": 25,
+      "max_pages": 5
+    }
+  }'
 ```
 
-The old `/collect/x/from-google-search` endpoint remains as a compatibility alias, but it now uses the same free web-search path and does not call Google or use a key.
+Each source returns its own result object. A source failure does not discard the other source results.
 
-This does not fetch an X profile timeline and does not download video files. Search results do not prove the post contains a playable video file inside the app; they are Twitter/X video-post leads to review. Archive search remains available through `/collect/x/from-archive-search` with `"search_provider":"archive"` when you specifically want archive.ph-style discovery.
-
-## Setup
-
-From this folder:
+### Search Reddit and X Only
 
 ```bash
-./setup.sh
-```
-
-This creates the Docker network, connects the existing `hermes` container if it exists, creates `.env` only if missing, and creates `data/`.
-
-It never deletes `~/.hermes`. Deleting `~/.hermes` would delete Hermes data and should not be done for this project.
-
-## Start
-
-```bash
-./start.sh
-```
-
-Then open:
-
-http://127.0.0.1:8787/ui
-
-## Stop
-
-```bash
-./stop.sh
-```
-
-This stops only `drama-clip-scout`. It does not stop Hermes and does not delete data.
-
-## Logs
-
-```bash
-./logs.sh
-```
-
-## Collect Data
-
-Collect Reddit posts:
-
-```bash
-./collect_reddit.sh
-```
-
-Collect X posts:
-
-```bash
-./collect_x.sh
-```
-
-Collect all sources:
-
-```bash
-./collect_all.sh
-```
-
-You can also use the buttons in:
-
-http://127.0.0.1:8787/ui
-
-The dashboard defaults to faster collection: it caps new Reddit and X web-search collection at 10 items and skips Reddit comment fetching. Enable `Deep search / more results` when you want 25+ collection and top Reddit comments.
-
-## UI Pages
-
-Dashboard:
-
-http://127.0.0.1:8787/ui
-
-Clip browser:
-
-http://127.0.0.1:8787/ui/clips
-
-Runs:
-
-http://127.0.0.1:8787/ui/runs
-
-Settings status:
-
-http://127.0.0.1:8787/ui/settings
-
-Readable report:
-
-http://127.0.0.1:8787/ui/report
-
-Markdown report:
-
-http://127.0.0.1:8787/reports/latest.md
-
-The settings page only says `configured` or `missing`. It does not show API key values and does not send secret values to the browser.
-
-## Hermes Prompt
-
-Use this in Hermes:
-
-```text
-Use the local Drama Clip Scout API at http://drama-clip-scout:8787/agent/search-clips. Find the top high potential r/LivestreamFail clips from the last day. Return titles, links, scores, and why each one may be useful. Do not claim anything is confirmed drama unless the source clearly supports it.
-```
-
-## API Examples
-
-Health:
-
-```bash
-curl http://127.0.0.1:8787/health
-```
-
-Reddit collection:
-
-```bash
-curl -X POST http://127.0.0.1:8787/collect/reddit \
+curl -sS -X POST http://127.0.0.1:8787/agent/search-clips \
   -H 'Content-Type: application/json' \
-  -d '{"mode":"hot","limit":25}'
+  -d '{
+    "source": "reddit_x",
+    "time_window": "month",
+    "keywords": ["Streamer", "University"],
+    "min_drama_score": 0,
+    "has_video": true,
+    "limit": 25
+  }'
 ```
 
-X collection:
+This searches stored Reddit and X results and excludes Kiwi Farms. Collection and search are separate API operations; the dashboard’s `Collect + Find` button performs both.
+
+### Filter the Clip API
 
 ```bash
-curl -X POST http://127.0.0.1:8787/collect/x \
-  -H 'Content-Type: application/json' \
-  -d '{"limit":25}'
+curl -sS \
+  'http://127.0.0.1:8787/clips?source=reddit_x&time_window=month&has_video=true&keyword=university&limit=25'
 ```
 
-Hermes-facing search endpoint:
+### Generate a Filtered Report
 
 ```bash
-curl -X POST http://127.0.0.1:8787/agent/search-clips \
-  -H 'Content-Type: application/json' \
-  -d '{"source":"all","time_window":"day","keywords":[],"min_drama_score":70,"limit":20}'
+curl -sS \
+  'http://127.0.0.1:8787/reports/latest.md?source=reddit_x'
 ```
 
-Inside Docker, Hermes should use:
+## Hermes Integration
+
+Hermes should call:
 
 ```text
 http://drama-clip-scout:8787/agent/search-clips
 ```
 
-## Download Tools In Docker
+Example Hermes request:
 
-The Docker image includes `yt-dlp` and `ffmpeg` so copied result URLs can be downloaded from inside the existing `drama-clip-scout` container. Downloads should be saved under `/data/downloads`, which maps to `./data/downloads` on the host.
+```text
+Use the local Drama Clip Scout API at http://drama-clip-scout:8787/agent/search-clips.
+Search Reddit and X only for verified videos about Streamer University from the last month.
+Use source "reddit_x", time_window "month", keywords ["Streamer", "University"],
+min_drama_score 0, has_video true, and limit 25.
+Return direct links, titles, source, score, and a short reason.
+Treat every result as a lead and verify the linked source before making a claim.
+```
 
-After running `Collect + Find` in the dashboard, each result card has a `Download` button that saves that source URL under `/data/downloads/<source>/<item-id>-<title-slug>`. You can also use `Copy URLs` to copy newline-separated result links, or `Copy yt-dlp Command` to copy a ready-to-paste Docker command for the current results.
+The dashboard’s `Copy Hermes Prompt` button generates a handoff from the current controls.
+
+## Downloads
+
+The Docker image includes:
+
+- `yt-dlp`
+- `ffmpeg`
+- Deno as the JavaScript runtime used by current `yt-dlp` extractors
+
+Downloads are stored under:
+
+```text
+/data/downloads/<source>/<item-id>-<title-slug>
+```
+
+On the host, that maps to:
+
+```text
+./data/downloads/<source>/<item-id>-<title-slug>
+```
+
+For Kiwi Farms items, the downloader attempts the primary media URL plus every attached supported media URL. The result may be:
+
+- `success`: every attempted media URL succeeded.
+- `partial`: at least one URL succeeded and at least one failed.
+- `failed`: no URL succeeded.
 
 Example:
 
 ```bash
-docker exec drama-clip-scout mkdir -p /data/downloads
-docker exec drama-clip-scout yt-dlp -P /data/downloads "https://example.com/video-or-post-url"
+curl -sS -X POST http://127.0.0.1:8787/downloads/items/123
 ```
 
-For many sites, `yt-dlp` can resolve the media URL and `ffmpeg` can merge video/audio when needed. X/Twitter links may still fail when X blocks logged-out access or requires cookies.
+Download a mixed set of X/Twitter, YouTube, and Reddit links:
 
-## What Gets Stored
+```bash
+curl -sS -X POST http://127.0.0.1:8787/downloads/links \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "urls": [
+      "https://x.com/example/status/1234567890",
+      "https://www.youtube.com/watch?v=abcdefghijk",
+      "https://www.reddit.com/r/videos/comments/abc123/example/"
+    ]
+  }'
+```
 
-Drama Clip Scout stores links and metadata only:
+All unified-link downloads are stored in the same directory:
 
-- Reddit post IDs, titles, authors, scores, comments, links, thumbnails, and raw JSON.
-- X post IDs, text, author metadata, public metrics, media metadata, links, and raw JSON.
-- Ranking scores and short reasoning.
+```text
+./data/downloads/link-downloader/
+```
 
-It does not download videos by default and does not repost videos. Dashboard and clip cards include opt-in download buttons that run `yt-dlp` for the selected source URL.
+Video filenames start with the video or post title and end with a platform extractor plus video ID. X photo and screenshot filenames include the account handle and status ID to avoid collisions.
 
+Or run `yt-dlp` directly:
 
-## Reset Only Drama Clip Scout
+```bash
+docker exec drama-clip-scout \
+  yt-dlp -P /data/downloads \
+  "https://example.com/video-or-post-url"
+```
 
-Remove only the Drama Clip Scout container:
+X/Twitter, YouTube, or Reddit downloads may still fail when the source blocks logged-out access, requires cookies, removes the post, or restricts the media. X screenshots require the post text to be available either in the local collection database or in the public status-page metadata.
+
+## Storage and Ranking
+
+SQLite is stored at:
+
+```text
+./data/clips.db
+```
+
+The database contains:
+
+- Source definitions.
+- Collected Reddit, X, and Kiwi Farms items.
+- Comments and source metrics.
+- Media metadata and variants.
+- Collection-run history.
+- A history of ranking records.
+
+Ranking signals include:
+
+- Engagement score, likes, or reposts.
+- Comment/reply volume and velocity.
+- Views where available.
+- Recency.
+- Drama/reaction keywords.
+- Verified video or media metadata.
+- Multiple independent media links.
+- Query-match frequency.
+- Configured streamer-name matches.
+- Intensity terms in collected top comments.
+
+Labels are:
+
+- `high potential`: score 70 or above.
+- `medium potential`: score 40–69.99.
+- `low potential`: below 40.
+
+Rankings are heuristics. They do not confirm that a claim is true or that a clip has sufficient context.
+
+## Troubleshooting
+
+### The dashboard returns no recent results
+
+Check the time window. `day` means the last 24 hours, and an event from several days ago will not appear. Enabling deep search changes the default day window to month, or you can select `week`, `month`, `year`, or `all`.
+
+### Videos Only returns fewer results
+
+This is expected when X exposes only a photo or does not expose media metadata. Clear `Videos only` to review unverified status links and text-only leads.
+
+### One X URL returns 404
+
+The collector skips that URL and continues processing the rest of the batch. The collection result reports the skipped URL.
+
+### X API errors with 401, 402, 403, or 429
+
+- `401`: verify the bearer token.
+- `402`: the X project may require paid usage credits.
+- `403`: the app/token may not have access to that endpoint.
+- `429`: wait for the rate-limit window or use a smaller request.
+
+You can continue using the free public discovery paths without X API access.
+
+### Kiwi Farms is unavailable
+
+The bridge or public guest search may be temporarily unavailable. Review the nonfatal note in the dashboard or `/runs`, then retry later. Reddit and X collection continue independently.
+
+### A download fails
+
+Open the source URL first to confirm it is still public. Source sites may require authentication, cookies, or formats unsupported by the current extractor. Check:
+
+```bash
+./logs.sh
+```
+
+### The app cannot start because `drama-net` is missing
+
+Run:
+
+```bash
+./setup.sh
+./start.sh
+```
+
+## Tests
+
+The tests use in-memory SQLite databases, mocks, and saved minimal fixtures. They do not perform live Kiwi Farms collection.
+
+With the Python dependencies installed:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+If `pytest` is installed:
+
+```bash
+python3 -m pytest -q
+```
+
+## Reset and Data Removal
+
+Remove only the application container:
 
 ```bash
 ./reset-container.sh
 ```
 
-This does not delete SQLite data.
+This preserves `./data/clips.db`, downloads, Hermes, and `~/.hermes`.
 
-Fully reset only Drama Clip Scout data with this clearly destructive command:
+To intentionally delete only Drama Clip Scout’s SQLite database:
 
 ```bash
 rm -f ./data/clips.db ./data/clips.db-shm ./data/clips.db-wal
 ```
 
-Do not delete `~/.hermes` for this project. That belongs to Hermes and may contain Hermes config, memory, sessions, skills, and API keys.
+Downloaded files under `./data/downloads/` are separate and are not removed by that command.
+
+Do not delete `~/.hermes`; it belongs to Hermes.

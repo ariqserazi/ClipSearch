@@ -67,6 +67,10 @@ function staticDownloadSummary(data) {
     const count = (data.files || []).length;
     return `Downloaded ${count} file${count === 1 ? "" : "s"} to ${data.host_dir || data.download_dir}.`;
   }
+  if (data.status === "partial") {
+    const count = (data.files || []).length;
+    return `Downloaded ${count} file${count === 1 ? "" : "s"}; ${data.media_failed || 0} of ${data.media_count || 0} media URLs failed. Files are in ${data.host_dir || data.download_dir}.`;
+  }
   const detail = (data.stderr_tail || data.stdout_tail || "yt-dlp could not resolve this URL.").trim();
   return `Download failed for item #${data.item_id}: ${detail}`;
 }
@@ -83,14 +87,14 @@ async function downloadStaticItem(itemId, button, showResult = true) {
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.detail || data.error || "Download failed");
-    const succeeded = data.status === "success";
-    button.textContent = succeeded ? "Downloaded" : "Retry";
+    const succeeded = data.status !== "failed";
+    button.textContent = data.status === "success" ? "Downloaded" : data.status === "partial" ? "Partial" : "Retry";
     if (showResult) setDownloadMessage(staticDownloadSummary(data), succeeded ? "success" : "error");
-    return { succeeded, fileCount: (data.files || []).length };
+    return { succeeded, fileCount: (data.files || []).length, failedMedia: data.media_failed || 0 };
   } catch (error) {
     button.textContent = "Retry";
     if (showResult) setDownloadMessage(error.message, "error");
-    return { succeeded: false, fileCount: 0 };
+    return { succeeded: false, fileCount: 0, failedMedia: 0 };
   } finally {
     button.disabled = false;
     if (button.textContent === "Downloading...") button.textContent = originalText;
@@ -109,6 +113,7 @@ async function downloadAllStaticItems(button) {
   let completed = 0;
   let succeeded = 0;
   let fileCount = 0;
+  let failedMedia = 0;
   button.disabled = true;
   const worker = async () => {
     while (nextIndex < uniqueButtons.length) {
@@ -117,6 +122,7 @@ async function downloadAllStaticItems(button) {
       completed += 1;
       succeeded += result.succeeded ? 1 : 0;
       fileCount += result.fileCount;
+      failedMedia += result.failedMedia;
       button.textContent = `Downloading ${completed}/${uniqueButtons.length}`;
       setDownloadMessage(`Downloading ${completed} of ${uniqueButtons.length} shown clips...`);
     }
@@ -124,7 +130,7 @@ async function downloadAllStaticItems(button) {
   try {
     await Promise.all(Array.from({ length: Math.min(2, uniqueButtons.length) }, worker));
     const failed = uniqueButtons.length - succeeded;
-    const summary = `Finished: ${succeeded} of ${uniqueButtons.length} clips downloaded (${fileCount} file${fileCount === 1 ? "" : "s"}) to data/downloads.${failed ? ` ${failed} failed; use Retry on those cards.` : ""}`;
+    const summary = `Finished: ${succeeded} of ${uniqueButtons.length} posts downloaded (${fileCount} file${fileCount === 1 ? "" : "s"}) to data/downloads.${failedMedia ? ` ${failedMedia} individual download attempts failed.` : ""}${failed ? ` ${failed} items failed; use Retry on those cards.` : ""}`;
     setDownloadMessage(summary, failed ? "error" : "success");
   } finally {
     button.disabled = false;
@@ -173,6 +179,7 @@ def dashboard(db: Session = Depends(get_db)):
   <div><strong>{high}</strong><span>High potential</span></div>
   <div><strong>{counts.get("reddit", 0)}</strong><span>Reddit clips</span></div>
   <div><strong>{counts.get("x", 0)}</strong><span>X posts</span></div>
+  <div><strong>{counts.get("kiwifarms", 0)}</strong><span>Kiwi Farms leads</span></div>
 </section>
 <section class="research-grid">
   <form id="research-form" class="panel research-panel">
@@ -181,21 +188,22 @@ def dashboard(db: Session = Depends(get_db)):
       <span class="pill">free web search</span>
     </div>
     <div class="research-fields">
-      <label>Target<select id="source-choice"><option value="reddit">Reddit</option><option value="x">X / Twitter</option><option value="all">Both</option></select></label>
+      <label>Target<select id="source-choice"><option value="reddit">Reddit</option><option value="x">X / Twitter</option><option value="reddit_x">Reddit + X</option><option value="kiwifarms">Kiwi Farms</option><option value="all">All Sources</option></select></label>
       <label>Subreddit<input id="subreddit" value="{html.escape(get_settings().default_subreddit)}" placeholder="LivestreamFail"></label>
       <label>Reddit URL<input id="reddit-url" placeholder="https://www.reddit.com/r/..."></label>
       <label>X account optional<input id="x-account" placeholder="@DramaAlert"></label>
-      <label>Person or topic<input id="x-person" placeholder="Hasan debate"></label>
+      <label>Person or topic<input id="person-topic" placeholder="Hasan debate"></label>
       <label class="wide">X URLs<textarea id="x-urls" rows="3" placeholder="https://x.com/user/status/..."></textarea></label>
       <label class="wide">X archive path<input id="x-archive-path" placeholder="/data/x-archive or /data/x-archive/data/tweets.js"></label>
-      <p class="field-note wide">Free web search uses DuckDuckGo and fallback result pages to find direct X/Twitter status links automatically, then imports those posts without paid search APIs.</p>
+      <p class="field-note wide">The shared person/topic is used for X web discovery and public Kiwi Farms bridge search. Kiwi Farms may return a nonfatal note when the bridge or its guest access is temporarily unavailable.</p>
       <label>Reddit mode<select id="reddit-mode"><option value="hot">hot</option><option value="new">new</option><option value="rising">rising</option><option value="top_day">top day</option><option value="top_week">top week</option></select></label>
-      <label>Time window<select id="time-window"><option value="day">day</option><option value="week">week</option><option value="month">month</option><option value="year">this year</option></select></label>
+      <label>Time window<select id="time-window"><option value="day">day</option><option value="week">week</option><option value="month">month</option><option value="year">this year</option><option value="all">all time</option></select></label>
       <label>Minimum score<input id="min-score" type="number" min="0" max="100" value="0"></label>
-      <label>Limit<input id="research-limit" type="number" min="1" max="5000" value="10"></label>
+      <label>Limit<input id="research-limit" type="number" min="25" max="5000" value="25"></label>
       <label class="checkline"><input id="only-video" type="checkbox" checked> Videos only</label>
       <label class="checkline"><input id="web-search" type="checkbox" checked> Free web search</label>
       <label class="checkline"><input id="deep-search" type="checkbox"> Deep search / more results</label>
+      <p class="field-note wide">Turning on deep search widens the default day window to one month. You can choose another time window afterward.</p>
     </div>
   </form>
   <section class="panel prompt-panel">
@@ -213,9 +221,22 @@ def dashboard(db: Session = Depends(get_db)):
       <button id="download-all" type="button" class="secondary">Download all shown</button>
     </div>
     <p class="muted">Latest collection run: {html.escape(latest_run_text)}</p>
+    <div id="collection-status" class="message" hidden></div>
     <div id="message" class="message" hidden></div>
     <pre id="hermes-handoff" class="handoff" hidden></pre>
   </section>
+</section>
+<section class="panel">
+  <div class="panel-head">
+    <h2>Multi-link Downloader</h2>
+    <span class="pill">X posts &amp; photos • YouTube • Reddit</span>
+  </div>
+  <p class="muted">Paste up to 100 mixed links. X videos download normally, X photos save as image files, and text-only X posts save as PNG screenshots. Every file is saved under data/downloads/link-downloader.</p>
+  <textarea id="video-download-urls" rows="6" placeholder="https://x.com/user/status/1234567890&#10;https://www.youtube.com/watch?v=abcdefghijk&#10;https://www.reddit.com/r/videos/comments/abc123/example/"></textarea>
+  <div class="actions command-row">
+    <button id="download-video-links" type="button">Download links</button>
+  </div>
+  <div id="video-download-status" class="message" hidden></div>
 </section>
 <section id="research-results" class="clip-list"></section>
 <section class="panel">
@@ -230,8 +251,10 @@ def dashboard(db: Session = Depends(get_db)):
 <script>
 const stopWords = new Set(["about", "after", "also", "and", "are", "clip", "clips", "find", "for", "from", "give", "links", "me", "only", "person", "specific", "streamer", "streamers", "that", "the", "this", "to", "video", "videos", "want", "what", "with"]);
 const message = document.getElementById("message");
+const collectionStatus = document.getElementById("collection-status");
 const results = document.getElementById("research-results");
 const handoff = document.getElementById("hermes-handoff");
+const videoDownloadStatus = document.getElementById("video-download-status");
 let currentResults = [];
 
 function esc(value) {{
@@ -244,7 +267,7 @@ function splitLines(value) {{
 
 function promptKeywords() {{
   const prompt = document.getElementById("hermes-request").value;
-  const person = document.getElementById("x-person").value;
+  const person = document.getElementById("person-topic").value;
   const tokens = prompt.toLowerCase().match(/[a-z0-9_@.-]+/g) || [];
   const personTokens = person.toLowerCase().match(/[a-z0-9_@.-]+/g) || [];
   return [...new Set([...personTokens, ...tokens].map((token) => token.replace(/^@/, "")).filter((token) => token.length > 2 && !stopWords.has(token)))].slice(0, 8);
@@ -255,7 +278,7 @@ function sourceChoice() {{
 }}
 
 function rawResearchLimit() {{
-  return Math.max(1, Number(document.getElementById("research-limit").value || 10));
+  return Math.max(25, Number(document.getElementById("research-limit").value || 25));
 }}
 
 function deepSearchEnabled() {{
@@ -265,13 +288,13 @@ function deepSearchEnabled() {{
 function activeLimit(maximum = 100) {{
   const limit = rawResearchLimit();
   if (deepSearchEnabled()) return Math.min(maximum, Math.max(25, limit));
-  return Math.min(10, limit);
+  return Math.min(25, limit);
 }}
 
 function activeXPageLimit() {{
   const limit = rawResearchLimit();
   if (deepSearchEnabled()) return Math.min(100, Math.max(25, limit));
-  return 10;
+  return 25;
 }}
 
 function showMessage(text, kind = "") {{
@@ -295,7 +318,7 @@ function collectPayloads() {{
   const redditComments = deepSearchEnabled() ? 5 : 0;
   const prompt = document.getElementById("hermes-request").value.trim();
   const payloads = [];
-  if (source === "reddit" || source === "all") {{
+  if (source === "reddit" || source === "reddit_x" || source === "all") {{
     const subreddit = document.getElementById("subreddit").value.trim();
     const redditUrl = document.getElementById("reddit-url").value.trim();
     payloads.push(["/collect/reddit", {{
@@ -307,9 +330,9 @@ function collectPayloads() {{
       top_comments_limit: redditComments
     }}]);
   }}
-  if (source === "x" || source === "all") {{
+  if (source === "x" || source === "reddit_x" || source === "all") {{
     const account = document.getElementById("x-account").value.trim().replace(/^@/, "");
-    const person = document.getElementById("x-person").value.trim();
+    const person = document.getElementById("person-topic").value.trim();
     const xUrls = splitLines(document.getElementById("x-urls").value);
     const archivePath = document.getElementById("x-archive-path").value.trim();
     const useWebSearch = document.getElementById("web-search").checked && person && !archivePath;
@@ -340,6 +363,16 @@ function collectPayloads() {{
     }}]);
     }}
   }}
+  if (source === "kiwifarms" || source === "all") {{
+    const person = document.getElementById("person-topic").value.trim();
+    const query = person || prompt;
+    if (!query) throw new Error("Enter a person or topic, or add a Hermes request, before searching Kiwi Farms.");
+    payloads.push(["/collect/kiwifarms", {{
+      query,
+      limit: webSearchLimit,
+      max_pages: deepSearchEnabled() ? 25 : 5
+    }}]);
+  }}
   return payloads;
 }}
 
@@ -369,7 +402,7 @@ function buildHandoffPrompt(payload) {{
   const subreddit = document.getElementById("subreddit").value.trim();
   const redditUrl = document.getElementById("reddit-url").value.trim();
   const account = document.getElementById("x-account").value.trim();
-  const person = document.getElementById("x-person").value.trim();
+  const person = document.getElementById("person-topic").value.trim();
   const xUrls = splitLines(document.getElementById("x-urls").value);
   const archivePath = document.getElementById("x-archive-path").value.trim();
   const userPrompt = document.getElementById("hermes-request").value.trim();
@@ -381,12 +414,26 @@ function buildHandoffPrompt(payload) {{
     redditUrl ? `Reddit URL: ${{redditUrl}}` : "",
     account ? `X account: ${{account}}` : "",
     person ? `Person/topic: ${{person}}` : "",
+    `Kiwi Farms searched: ${{source === "kiwifarms" || source === "all" ? "yes, through the public guest bridge" : "no"}}`,
     `Search mode: ${{deepSearchEnabled() ? "deep" : "fast"}}`,
     xUrls.length ? `X URLs: ${{xUrls.join(", ")}}` : "",
     archivePath ? `X archive path: ${{archivePath}}` : "",
     `Search payload: ${{JSON.stringify(payload)}}`,
     "Return direct links, titles, source, score, and a short reason. Treat results as leads, not confirmed claims."
   ].filter(Boolean).join("\\n");
+}}
+
+function resultActions(item) {{
+  const actions = [];
+  if (item.source === "kiwifarms") {{
+    if (item.is_video && item.url) actions.push(`<a class="button" href="${{esc(item.url)}}" target="_blank" rel="noreferrer">Open media</a>`);
+    if (item.permalink) actions.push(`<a class="button ghost" href="${{esc(item.permalink)}}" target="_blank" rel="noreferrer">Open forum post</a>`);
+  }} else if (item.url) {{
+    actions.push(`<a class="button" href="${{esc(item.url)}}" target="_blank" rel="noreferrer">Open original</a>`);
+  }}
+  actions.push(`<a class="button ghost" href="/ui/clips/${{item.id}}">View details</a>`);
+  if (item.is_video || item.source === "x") actions.push(`<button class="secondary download-button" type="button" data-download-id="${{esc(item.id)}}">Download</button>`);
+  return actions.join("");
 }}
 
 function renderResults(items) {{
@@ -402,12 +449,8 @@ function renderResults(items) {{
         <div class="row"><span class="badge">${{esc(item.source)}}</span><span class="label">${{esc(item.potential_label)}}</span><strong>${{esc(item.drama_score)}}</strong></div>
         <h2>${{esc(item.title_or_text)}}</h2>
         <p>${{esc(item.reasoning)}}</p>
-        <p class="muted">${{esc(item.created_time || "unknown time")}}</p>
-        <div class="actions small">
-          <a class="button" href="${{esc(item.url)}}" target="_blank" rel="noreferrer">Open original</a>
-          <a class="button ghost" href="/ui/clips/${{item.id}}">View details</a>
-          <button class="secondary download-button" type="button" data-download-id="${{esc(item.id)}}">Download</button>
-        </div>
+        <p class="muted">${{esc(item.created_time || "unknown time")}}${{item.author_name ? ` | ${{esc(item.author_name)}}` : ""}}</p>
+        <div class="actions small">${{resultActions(item)}}</div>
       </div>
     </article>
   `).join("");
@@ -415,6 +458,15 @@ function renderResults(items) {{
 
 function resultUrls() {{
   return [...new Set(currentResults.map((item) => item.url).filter(Boolean))];
+}}
+
+function downloadableResultUrls() {{
+  const urls = currentResults.filter((item) => item.is_video).flatMap((item) => {{
+    if (item.source !== "kiwifarms") return [item.url].filter(Boolean);
+    const mediaUrls = (item.media?.items || []).map((entry) => entry.url).filter(Boolean);
+    return mediaUrls.length ? mediaUrls : [item.url].filter(Boolean);
+  }});
+  return [...new Set(urls)];
 }}
 
 function dockerDownloadCommand(urls) {{
@@ -430,8 +482,60 @@ function downloadSummary(data) {{
     const count = (data.files || []).length;
     return `Downloaded ${{count}} file${{count === 1 ? "" : "s"}} to ${{data.host_dir || data.download_dir}}.`;
   }}
+  if (data.status === "partial") {{
+    const count = (data.files || []).length;
+    return `Downloaded ${{count}} file${{count === 1 ? "" : "s"}}; ${{data.media_failed || 0}} of ${{data.media_count || 0}} media URLs failed. Files are in ${{data.host_dir || data.download_dir}}.`;
+  }}
   const detail = (data.stderr_tail || data.stdout_tail || "yt-dlp could not resolve this URL.").trim();
   return `Download failed for item #${{data.item_id}}: ${{detail}}`;
+}}
+
+function renderLinkDownloadResult(data) {{
+  const total = data.unique_count || 0;
+  const counts = Object.entries(data.source_counts || {{}}).map(([source, count]) => `${{source}}: ${{count}}`).join(", ");
+  const summary = `Finished: ${{data.succeeded || 0}} of ${{total}} unique links saved inside the app at ${{data.host_dir || "data/downloads/link-downloader"}}.${{counts ? ` Sources: ${{counts}}.` : ""}}${{data.duplicates_skipped ? ` ${{data.duplicates_skipped}} duplicate${{data.duplicates_skipped === 1 ? "" : "s"}} skipped.` : ""}}${{data.invalid_count ? ` ${{data.invalid_count}} invalid link${{data.invalid_count === 1 ? "" : "s"}}.` : ""}}`;
+  const rows = (data.downloads || []).map((entry) => {{
+    const files = entry.files || [];
+    const detail = entry.error || files.length + ` file${{files.length === 1 ? "" : "s"}}`;
+    const source = entry.source ? `[${{entry.source}}] ` : "";
+    const fileLinks = files.map((file) => {{
+      const name = file.name || String(file.host_path || file.path || "downloaded file").split("/").pop();
+      const saveLink = file.download_url
+        ? `<a class="button ghost small-button" href="${{esc(file.download_url)}}" download>Save file</a>`
+        : "";
+      return `<li>${{saveLink}} <strong>${{esc(name)}}</strong><br><code>${{esc(file.host_path || file.path || "")}}</code></li>`;
+    }}).join("");
+    return `<li><span class="status ${{entry.status === "success" ? "ok" : "missing"}}">${{esc(entry.status)}}</span> ${{esc(source)}}${{esc(entry.url || entry.input_url || "unknown link")}} — ${{esc(detail)}}${{fileLinks ? `<ul class="comments">${{fileLinks}}</ul>` : ""}}</li>`;
+  }}).join("");
+  videoDownloadStatus.hidden = false;
+  videoDownloadStatus.className = "message " + (data.status === "success" ? "success" : "error");
+  videoDownloadStatus.innerHTML = `<p>${{esc(summary)}}</p><p>Use <strong>Save file</strong> to copy an output into your browser’s Downloads folder.</p>${{rows ? `<ul class="comments">${{rows}}</ul>` : ""}}`;
+}}
+
+async function downloadVideoLinks(button) {{
+  const urls = splitLines(document.getElementById("video-download-urls").value);
+  if (!urls.length) {{
+    videoDownloadStatus.hidden = false;
+    videoDownloadStatus.className = "message error";
+    videoDownloadStatus.textContent = "Paste at least one X/Twitter post, YouTube video, or Reddit post link.";
+    return;
+  }}
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = `Downloading ${{urls.length}} link${{urls.length === 1 ? "" : "s"}}...`;
+  videoDownloadStatus.hidden = false;
+  videoDownloadStatus.className = "message";
+  videoDownloadStatus.textContent = "Starting downloads. This can take several minutes.";
+  try {{
+    const data = await postJson("/downloads/links", {{ urls }});
+    renderLinkDownloadResult(data);
+  }} catch (error) {{
+    videoDownloadStatus.className = "message error";
+    videoDownloadStatus.textContent = error.message;
+  }} finally {{
+    button.disabled = false;
+    button.textContent = originalText;
+  }}
 }}
 
 async function downloadItem(itemId, button) {{
@@ -440,7 +544,7 @@ async function downloadItem(itemId, button) {{
   button.textContent = "Downloading...";
   try {{
     const data = await postJson(`/downloads/items/${{itemId}}`, {{}});
-    showMessage(downloadSummary(data), data.status === "success" ? "success" : "error");
+    showMessage(downloadSummary(data), data.status === "failed" ? "error" : "success");
   }} catch (error) {{
     showMessage(error.message, "error");
   }} finally {{
@@ -450,9 +554,9 @@ async function downloadItem(itemId, button) {{
 }}
 
 async function downloadAllResults(button) {{
-  const itemIds = [...new Set(currentResults.map((item) => String(item.id)).filter(Boolean))];
+  const itemIds = [...new Set(currentResults.filter((item) => item.is_video || item.source === "x").map((item) => String(item.id)).filter(Boolean))];
   if (!itemIds.length) {{
-    showMessage("No results are shown to download. Run Collect + Find first.", "error");
+    showMessage("No downloadable video or X post results are shown.", "error");
     return;
   }}
   const originalText = button.textContent;
@@ -460,6 +564,7 @@ async function downloadAllResults(button) {{
   let completed = 0;
   let succeeded = 0;
   let fileCount = 0;
+  let failedMedia = 0;
   button.disabled = true;
   const worker = async () => {{
     while (nextIndex < itemIds.length) {{
@@ -471,10 +576,11 @@ async function downloadAllResults(button) {{
       }}
       try {{
         const data = await postJson(`/downloads/items/${{itemId}}`, {{}});
-        const success = data.status === "success";
+        const success = data.status !== "failed";
         succeeded += success ? 1 : 0;
         fileCount += success ? (data.files || []).length : 0;
-        if (itemButton) itemButton.textContent = success ? "Downloaded" : "Retry";
+        failedMedia += data.media_failed || 0;
+        if (itemButton) itemButton.textContent = data.status === "success" ? "Downloaded" : data.status === "partial" ? "Partial" : "Retry";
       }} catch (_error) {{
         if (itemButton) itemButton.textContent = "Retry";
       }} finally {{
@@ -488,7 +594,7 @@ async function downloadAllResults(button) {{
   try {{
     await Promise.all(Array.from({{ length: Math.min(2, itemIds.length) }}, worker));
     const failed = itemIds.length - succeeded;
-    const summary = `Finished: ${{succeeded}} of ${{itemIds.length}} clips downloaded (${{fileCount}} file${{fileCount === 1 ? "" : "s"}}) to data/downloads.${{failed ? ` ${{failed}} failed; use Retry on those cards.` : ""}}`;
+    const summary = `Finished: ${{succeeded}} of ${{itemIds.length}} posts downloaded (${{fileCount}} file${{fileCount === 1 ? "" : "s"}}) to data/downloads.${{failedMedia ? ` ${{failedMedia}} individual download attempts failed.` : ""}}${{failed ? ` ${{failed}} items failed; use Retry on those cards.` : ""}}`;
     showMessage(summary, failed ? "error" : "success");
   }} finally {{
     button.disabled = false;
@@ -496,22 +602,48 @@ async function downloadAllResults(button) {{
   }}
 }}
 
+function collectionSource(url) {{
+  if (url.startsWith("/collect/reddit")) return "Reddit";
+  if (url.startsWith("/collect/kiwifarms")) return "Kiwi Farms";
+  return "X / Twitter";
+}}
+
+function renderCollectionStatus(items) {{
+  collectionStatus.hidden = false;
+  collectionStatus.innerHTML = items.map((item) => {{
+    const status = item.status || "unknown";
+    const detail = item.note || item.error || `${{item.items_collected || 0}} items collected`;
+    return `<div><strong>${{esc(item.collection_source)}}:</strong> <span class="status ${{status === "success" ? "ok" : "missing"}}">${{esc(status)}}</span> ${{esc(detail)}}</div>`;
+  }}).join("");
+}}
+
 async function collectSources() {{
   const completed = [];
   for (const [url, payload] of collectPayloads()) {{
-    completed.push(await postJson(url, payload));
+    const sourceName = collectionSource(url);
+    try {{
+      completed.push({{ ...(await postJson(url, payload)), collection_source: sourceName }});
+    }} catch (error) {{
+      completed.push({{ status: "failed", items_collected: 0, error: error.message, collection_source: sourceName }});
+    }}
+    renderCollectionStatus(completed);
   }}
   const source = sourceChoice();
-  const shouldTryRedditXLinks = (source === "x" || source === "all") && completed.some((item) => item.source_mode === "web" && (item.items_collected || 0) === 0);
+  const shouldTryRedditXLinks = (source === "x" || source === "reddit_x" || source === "all") && completed.some((item) => item.collection_source === "X / Twitter" && item.source_mode === "web" && (item.items_collected || 0) === 0);
   if (shouldTryRedditXLinks) {{
     showMessage("X timeline was not exposed. Scanning collected Reddit leads for direct X status links...");
     const account = document.getElementById("x-account").value.trim().replace(/^@/, "");
-    completed.push(await postJson("/collect/x/from-reddit", {{
-      query: document.getElementById("hermes-request").value.trim() || null,
-      accounts: account ? [account] : null,
-      time_window: document.getElementById("time-window").value,
-      limit: activeLimit()
-    }}));
+    try {{
+      completed.push({{ ...(await postJson("/collect/x/from-reddit", {{
+        query: document.getElementById("hermes-request").value.trim() || null,
+        accounts: account ? [account] : null,
+        time_window: document.getElementById("time-window").value,
+        limit: activeLimit()
+      }})), collection_source: "X / Twitter (Reddit discovery)" }});
+    }} catch (error) {{
+      completed.push({{ status: "failed", items_collected: 0, error: error.message, collection_source: "X / Twitter (Reddit discovery)" }});
+    }}
+    renderCollectionStatus(completed);
   }}
   return completed;
 }}
@@ -521,6 +653,8 @@ async function runResearch(onlyCollect = false) {{
   currentResults = [];
   results.innerHTML = "";
   handoff.hidden = true;
+  collectionStatus.hidden = true;
+  collectionStatus.innerHTML = "";
   showMessage(onlyCollect ? "Collecting selected sources..." : "Collecting selected sources and searching leads...");
   try {{
     const collected = await collectSources();
@@ -545,6 +679,10 @@ async function runResearch(onlyCollect = false) {{
 
 document.getElementById("run-research").addEventListener("click", () => runResearch(false));
 document.getElementById("collect-only").addEventListener("click", () => runResearch(true));
+document.getElementById("deep-search").addEventListener("change", (event) => {{
+  const timeWindow = document.getElementById("time-window");
+  if (event.currentTarget.checked && timeWindow.value === "day") timeWindow.value = "month";
+}});
 document.getElementById("copy-hermes").addEventListener("click", async () => {{
   const payload = searchPayload();
   const text = buildHandoffPrompt(payload);
@@ -563,9 +701,9 @@ document.getElementById("copy-urls").addEventListener("click", async () => {{
   showMessage(`Copied ${{urls.length}} result URL${{urls.length === 1 ? "" : "s"}}.`, "success");
 }});
 document.getElementById("copy-download-command").addEventListener("click", async () => {{
-  const urls = resultUrls();
+  const urls = downloadableResultUrls();
   if (!urls.length) {{
-    showMessage("No result URLs to download yet. Run Collect + Find first.", "error");
+    showMessage("No downloadable media URLs are shown. Nonvideo forum leads are links only.", "error");
     return;
   }}
   const command = dockerDownloadCommand(urls);
@@ -575,6 +713,7 @@ document.getElementById("copy-download-command").addEventListener("click", async
   showMessage(`Copied Docker yt-dlp command for ${{urls.length}} URL${{urls.length === 1 ? "" : "s"}}.`, "success");
 }});
 document.getElementById("download-all").addEventListener("click", (event) => downloadAllResults(event.currentTarget));
+document.getElementById("download-video-links").addEventListener("click", (event) => downloadVideoLinks(event.currentTarget));
 results.addEventListener("click", (event) => {{
   const button = event.target.closest("[data-download-id]");
   if (!button) return;
@@ -587,7 +726,7 @@ results.addEventListener("click", (event) => {{
 
 @router.get("/ui/clips", response_class=HTMLResponse)
 def clips_page(
-    source: str = Query("all", pattern="^(reddit|x|all)$"),
+    source: str = Query("all", pattern="^(reddit|x|reddit_x|kiwifarms|all)$"),
     min_drama_score: float = Query(0, ge=0, le=100),
     time_window: str = Query("week", pattern="^(day|week|month|year|all)$"),
     has_video: bool | None = None,
@@ -602,6 +741,17 @@ def clips_page(
         data = serialize_item(item, ranking)
         thumb = f'<img src="{html.escape(data["thumbnail"])}" alt="thumbnail">' if data.get("thumbnail") else '<div class="thumb empty">No thumbnail</div>'
         metrics = html.escape(json.dumps(data["metrics"], ensure_ascii=True))
+        actions = []
+        if data["source"] == "kiwifarms":
+            if data["is_video"]:
+                actions.append(f'<a class="button" href="{html.escape(data["url"])}" target="_blank" rel="noreferrer">Open media</a>')
+            if data["permalink"]:
+                actions.append(f'<a class="button ghost" href="{html.escape(data["permalink"])}" target="_blank" rel="noreferrer">Open forum post</a>')
+        else:
+            actions.append(f'<a class="button" href="{html.escape(data["url"])}" target="_blank" rel="noreferrer">Open original</a>')
+        actions.append(f'<a class="button ghost" href="/ui/clips/{data["id"]}">View details</a>')
+        if data["is_video"] or data["source"] == "x":
+            actions.append(f'<button class="secondary" type="button" data-download-id="{data["id"]}">Download</button>')
         cards.append(
             f"""
 <article class="clip-card">
@@ -610,12 +760,8 @@ def clips_page(
     <div class="row"><span class="badge">{html.escape(data["source"])}</span><span class="label">{html.escape(data["potential_label"])}</span><strong>{data["drama_score"]}</strong></div>
     <h2>{html.escape(data["title_or_text"])}</h2>
     <p>{html.escape(data["reasoning"])}</p>
-    <p class="muted">{html.escape(data["created_time"] or "unknown time")} | {metrics}</p>
-    <div class="actions small">
-      <a class="button" href="{html.escape(data["url"])}" target="_blank" rel="noreferrer">Open original</a>
-      <a class="button ghost" href="/ui/clips/{data["id"]}">View details</a>
-      <button class="secondary" type="button" data-download-id="{data["id"]}">Download</button>
-    </div>
+    <p class="muted">{html.escape(data["created_time"] or "unknown time")} | {html.escape(data["author_name"] or "unknown author")} | {metrics}</p>
+    <div class="actions small">{''.join(actions)}</div>
   </div>
 </article>"""
         )
@@ -624,7 +770,7 @@ def clips_page(
 <section class="panel">
   <h1>Clips</h1>
   <form class="filters" method="get">
-    <label>Source<select name="source"><option {"selected" if source == "all" else ""}>all</option><option {"selected" if source == "reddit" else ""}>reddit</option><option {"selected" if source == "x" else ""}>x</option></select></label>
+    <label>Source<select name="source"><option value="all" {"selected" if source == "all" else ""}>all</option><option value="reddit_x" {"selected" if source == "reddit_x" else ""}>reddit + x</option><option value="reddit" {"selected" if source == "reddit" else ""}>reddit</option><option value="x" {"selected" if source == "x" else ""}>x</option><option value="kiwifarms" {"selected" if source == "kiwifarms" else ""}>kiwifarms</option></select></label>
     <label>Minimum score<input type="number" name="min_drama_score" min="0" max="100" value="{min_drama_score}"></label>
     <label>Time window<select name="time_window"><option {"selected" if time_window == "day" else ""}>day</option><option {"selected" if time_window == "week" else ""}>week</option><option {"selected" if time_window == "month" else ""}>month</option><option value="year" {"selected" if time_window == "year" else ""}>this year</option><option {"selected" if time_window == "all" else ""}>all</option></select></label>
     <label>Has video<select name="has_video"><option value="" {"selected" if has_video is None else ""}>any</option><option value="true" {"selected" if has_video is True else ""}>true</option><option value="false" {"selected" if has_video is False else ""}>false</option></select></label>
@@ -667,13 +813,24 @@ def clip_detail_page(item_id: int, db: Session = Depends(get_db)):
         f"<li><strong>{html.escape(comment.get('author_name') or 'unknown')}</strong>: {html.escape(comment.get('body') or '')}</li>"
         for comment in data.get("comments", [])
     )
+    detail_actions = []
+    if data["source"] == "kiwifarms":
+        if data["is_video"]:
+            detail_actions.append(f'<a class="button" href="{html.escape(data["url"])}" target="_blank" rel="noreferrer">Open media</a>')
+        if data["permalink"]:
+            detail_actions.append(f'<a class="button ghost" href="{html.escape(data["permalink"])}" target="_blank" rel="noreferrer">Open forum post</a>')
+    else:
+        detail_actions.append(f'<a class="button" href="{html.escape(data["url"])}" target="_blank" rel="noreferrer">Open original post</a>')
+    if data["is_video"] or data["source"] == "x":
+        detail_actions.append(f'<button class="secondary" type="button" data-download-id="{data["id"]}">Download</button>')
     body = f"""
 <section class="panel detail">
   <div class="row"><span class="badge">{html.escape(data["source"])}</span><span class="label">{html.escape(data["potential_label"])}</span><strong>{data["drama_score"]}</strong></div>
   <h1>{html.escape(data["title_or_text"])}</h1>
   {thumbnail}
   <p>{html.escape(data["reasoning"])}</p>
-  <p class="actions"><a class="button" href="{html.escape(data["url"])}" target="_blank" rel="noreferrer">Open original post</a><button class="secondary" type="button" data-download-id="{data["id"]}">Download</button></p>
+  <p class="muted">{html.escape(data["created_time"] or "unknown time")} | {html.escape(data["author_name"] or "unknown author")}</p>
+  <p class="actions">{''.join(detail_actions)}</p>
   <div id="message" class="message" hidden></div>
   <h2>Metrics</h2>
   <pre>{html.escape(json.dumps(data["metrics"], indent=2, ensure_ascii=True))}</pre>
@@ -722,6 +879,8 @@ def settings_page():
         "REDDIT_PASSWORD": settings.reddit_password,
         "REDDIT_USER_AGENT": settings.reddit_user_agent,
         "X_BEARER_TOKEN": settings.x_bearer_token,
+        "KIWIFARMS_BRIDGE_URL": settings.kiwifarms_bridge_url,
+        "KIWIFARMS_BASE_URL (legacy fallback)": settings.kiwifarms_base_url,
         "USER_AGENT": DEFAULT_HEADERS["User-Agent"],
         "OUTBOUND_PROXY_URL": outbound_proxy_url(),
     }

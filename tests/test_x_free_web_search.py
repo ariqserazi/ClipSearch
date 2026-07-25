@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -121,13 +122,27 @@ class XFreeWebSearchDiscoveryTests(unittest.TestCase):
         self.assertEqual(media["12345-public-preview"]["preview_image_url"], "https://pbs.twimg.com/amplify_video_thumb/1/img/thumb.jpg")
         self.assertEqual(media["12345-public-preview"]["type"], "video")
 
+    def test_public_status_html_does_not_classify_a_photo_as_video(self):
+        html = """
+        <title>hasanabi on X: "A photo post" / X</title>
+        <meta property="og:title" content="hasanabi (@hasanthehun) on X">
+        <meta property="og:description" content="A photo post">
+        <meta property="og:image" content="https://pbs.twimg.com/media/example.jpg">
+        """
+
+        parsed = _tweet_from_public_status_html(html, "https://x.com/hasanthehun/status/12345")
+
+        self.assertIsNotNone(parsed)
+        _tweet, _users, media = parsed
+        self.assertEqual(media["12345-public-preview"]["type"], "photo")
+
     def test_archive_search_request_defaults_to_web_provider(self):
         request = XArchiveSearchRequest(topic="Hasan debate")
 
         self.assertEqual(request.search_provider, "web")
         self.assertIsNone(request.account)
 
-    def test_search_video_lead_is_stored_as_video_when_metadata_is_unavailable(self):
+    def test_search_status_lead_is_not_stored_as_video_when_metadata_is_unavailable(self):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(bind=engine)
         Session = sessionmaker(bind=engine)
@@ -146,7 +161,7 @@ class XFreeWebSearchDiscoveryTests(unittest.TestCase):
 
         stored = db.query(Item).filter(Item.id == item.id).one()
         self.assertTrue(created)
-        self.assertTrue(stored.is_video)
+        self.assertFalse(stored.is_video)
         self.assertEqual(stored.url, "https://x.com/hasanthehun/status/12345")
         self.assertEqual(stored.author_name, "hasanthehun")
         self.assertIn("Hasan debate", stored.title_or_text)
@@ -159,7 +174,7 @@ class XFreeWebSearchDiscoveryTests(unittest.TestCase):
         )
         self.assertFalse(created_again)
 
-    def test_search_video_lead_adds_topic_to_existing_item_search_text(self):
+    def test_search_discovery_topic_does_not_pollute_existing_tweet_search_text(self):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(bind=engine)
         Session = sessionmaker(bind=engine)
@@ -188,9 +203,10 @@ class XFreeWebSearchDiscoveryTests(unittest.TestCase):
 
         self.assertFalse(created)
         self.assertEqual(item.title_or_text, "TRUMP IS THE PRESIDENT")
-        self.assertIn("Search topic: Hasan", item.self_text)
+        self.assertNotIn("Search topic: Hasan", item.self_text or "")
+        self.assertIn("Hasan", item.raw_json)
 
-    def test_web_collection_keeps_discovered_video_links_when_x_metadata_is_empty(self):
+    def test_web_collection_keeps_unverified_status_links_out_of_video_only_results(self):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(bind=engine)
         Session = sessionmaker(bind=engine)
@@ -227,9 +243,53 @@ class XFreeWebSearchDiscoveryTests(unittest.TestCase):
         stored = db.query(Item).one()
         self.assertEqual(result["source_mode"], "web_search_discovery")
         self.assertEqual(result["items_collected"], 1)
-        self.assertEqual(result["web_search_video_leads_created"], 1)
-        self.assertTrue(stored.is_video)
+        self.assertEqual(result["web_search_status_leads_created"], 1)
+        self.assertFalse(stored.is_video)
+        rows = query_ranked_items(
+            db,
+            source="x",
+            min_drama_score=0,
+            time_window="all",
+            has_video=True,
+            keyword="Hasan",
+            limit=10,
+        )
+        self.assertEqual(rows, [])
         self.assertEqual(stored.url, "https://x.com/hasanthehun/status/12345")
+
+    def test_web_collection_skips_a_dead_status_url_and_keeps_processing(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=engine)
+        db = sessionmaker(bind=engine)()
+
+        with patch(
+            "app.x_client._collect_x_web_page",
+            new=AsyncMock(
+                side_effect=[
+                    RuntimeError("dead status URL"),
+                    (1, [], []),
+                ]
+            ),
+        ):
+            result = asyncio.run(
+                x_client.collect_x(
+                    db,
+                    XCollectRequest(
+                        urls=[
+                            "https://x.com/example/status/111",
+                            "https://x.com/example/status/222",
+                        ],
+                        source_mode="web",
+                        limit=10,
+                    ),
+                )
+            )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["items_collected"], 1)
+        self.assertEqual(result["pages_seen"], 2)
+        self.assertEqual(result["pages_failed"], 1)
+        self.assertIn("dead status URL", result["note"])
 
     def test_ranked_query_can_filter_x_results_by_account(self):
         engine = create_engine("sqlite:///:memory:")
@@ -241,6 +301,9 @@ class XFreeWebSearchDiscoveryTests(unittest.TestCase):
         db.flush()
         _upsert_search_video_lead(db, source, "https://x.com/Awk20000/status/111", "Hasan Piker")
         _upsert_search_video_lead(db, source, "https://x.com/Other/status/222", "Hasan Piker")
+        for item in db.query(Item).all():
+            item.is_video = True
+            item.raw_json = "{}"
         db.commit()
 
         rows = query_ranked_items(
@@ -257,6 +320,39 @@ class XFreeWebSearchDiscoveryTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0][0].author_name, "Awk20000")
 
+    def test_ranked_query_does_not_match_x_discovery_notes_as_tweet_content(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(bind=engine)
+        db = sessionmaker(bind=engine)()
+        source = Source(name="x", type="x", base_url="https://x.com")
+        db.add(source)
+        db.flush()
+        item = Item(
+            source_id=source.id,
+            external_id="unrelated",
+            title_or_text="An unrelated sports post",
+            url="https://x.com/example/status/111",
+            self_text="Search topic: Streamer University. Search-discovered X/Twitter video lead.",
+            is_video=True,
+            raw_json="{}",
+        )
+        db.add(item)
+        db.flush()
+        db.add(Ranking(item_id=item.id, drama_score=10, potential_label="low potential", reasoning="Test."))
+        db.commit()
+
+        rows = query_ranked_items(
+            db,
+            source="x",
+            min_drama_score=0,
+            time_window="all",
+            has_video=True,
+            keyword="university",
+            limit=10,
+        )
+
+        self.assertEqual(rows, [])
+
     def test_ranked_query_keeps_reddit_when_all_sources_have_x_account_filter(self):
         engine = create_engine("sqlite:///:memory:")
         Base.metadata.create_all(bind=engine)
@@ -268,6 +364,9 @@ class XFreeWebSearchDiscoveryTests(unittest.TestCase):
         db.flush()
         _upsert_search_video_lead(db, x_source, "https://x.com/Awk20000/status/111", "Hasan Piker")
         _upsert_search_video_lead(db, x_source, "https://x.com/Other/status/222", "Hasan Piker")
+        for item in db.query(Item).filter(Item.source_id == x_source.id).all():
+            item.is_video = True
+            item.raw_json = "{}"
         reddit_item = Item(
             source_id=reddit_source.id,
             external_id="reddit-1",

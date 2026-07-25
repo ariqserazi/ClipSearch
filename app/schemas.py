@@ -20,6 +20,12 @@ class XCollectRequest(BaseModel):
     limit: int = Field(default=50, ge=10, le=100)
 
 
+class KiwiFarmsCollectRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=200)
+    limit: int = Field(default=25, ge=1, le=100)
+    max_pages: int | None = Field(default=None, ge=1, le=25)
+
+
 class XFromRedditRequest(BaseModel):
     query: str | None = None
     accounts: list[str] | None = None
@@ -46,10 +52,11 @@ class XArchiveImportRequest(BaseModel):
 class CollectAllRequest(BaseModel):
     reddit: RedditCollectRequest = Field(default_factory=RedditCollectRequest)
     x: XCollectRequest = Field(default_factory=XCollectRequest)
+    kiwifarms: KiwiFarmsCollectRequest | None = None
 
 
 class ClipFilters(BaseModel):
-    source: Literal["reddit", "x", "all"] = "all"
+    source: Literal["reddit", "x", "reddit_x", "kiwifarms", "all"] = "all"
     min_drama_score: float = Field(default=0, ge=0, le=100)
     time_window: Literal["day", "week", "month", "year", "all"] = "week"
     has_video: bool | None = None
@@ -59,8 +66,8 @@ class ClipFilters(BaseModel):
 
 
 class AgentSearchRequest(BaseModel):
-    source: Literal["reddit", "x", "all"] = "all"
-    time_window: Literal["day", "week", "month", "year"] = "day"
+    source: Literal["reddit", "x", "reddit_x", "kiwifarms", "all"] = "all"
+    time_window: Literal["day", "week", "month", "year", "all"] = "day"
     keywords: list[str] = Field(default_factory=list)
     account: str | None = None
     min_drama_score: float = Field(default=70, ge=0, le=100)
@@ -73,7 +80,10 @@ class ClipResult(BaseModel):
     title_or_text: str
     source: str
     url: str
+    permalink: str | None = None
     thumbnail: str | None = None
+    author_name: str | None = None
+    is_video: bool = False
     drama_score: float
     potential_label: str
     reasoning: str
@@ -85,3 +95,11 @@ class ClipResult(BaseModel):
 
 class AgentSearchResponse(BaseModel):
     results: list[ClipResult]
+
+
+class LinksDownloadRequest(BaseModel):
+    urls: list[str] = Field(min_length=1, max_length=100)
+
+
+class XLinksDownloadRequest(LinksDownloadRequest):
+    pass

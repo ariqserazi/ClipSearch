@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     api_port: int = 8787
     hermes_gateway_internal_url: str = "http://hermes:8642"
     known_streamer_names: str = ""
+    kiwifarms_bridge_url: str = ""
+    kiwifarms_bridge_timeout_seconds: float = 75.0
+    kiwifarms_base_url: str = "https://kiwifarms.st"
+    kiwifarms_fallback_base_urls: str = ""
+    kiwifarms_request_delay_seconds: float = 1.5
+    kiwifarms_max_pages: int = 10
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -28,6 +34,15 @@ class Settings(BaseSettings):
     @property
     def streamers(self) -> List[str]:
         return [item.strip().lower() for item in self.known_streamer_names.split(",") if item.strip()]
+
+    @property
+    def kiwifarms_base_urls(self) -> List[str]:
+        values = [self.kiwifarms_base_url, *self.kiwifarms_fallback_base_urls.split(",")]
+        return list(dict.fromkeys(value.strip().rstrip("/") for value in values if value.strip()))
+
+    @property
+    def kiwifarms_bridge_configured(self) -> bool:
+        return bool(self.kiwifarms_bridge_url.strip())
 
     @property
     def reddit_configured(self) -> bool:

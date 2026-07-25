@@ -13,4 +13,6 @@ def health():
         "service": "drama-clip-scout",
         "reddit_configured": settings.reddit_configured,
         "x_configured": settings.x_configured,
+        "kiwifarms_bridge_configured": settings.kiwifarms_bridge_configured,
+        "kiwifarms_public_search_configured": settings.kiwifarms_bridge_configured or bool(settings.kiwifarms_base_url),
     }

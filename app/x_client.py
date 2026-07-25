@@ -111,7 +111,12 @@ def _best_status_thumbnail(html: str) -> str | None:
     for candidate in clean:
         if "profile_images" not in candidate:
             return candidate
-    return clean[0] if clean else None
+    return None
+
+
+def _status_thumbnail_media_type(url: str) -> str:
+    video_markers = ("amplify_video_thumb", "ext_tw_video_thumb", "tweet_video_thumb")
+    return "video" if any(marker in url for marker in video_markers) else "photo"
 
 
 def _tweet_from_public_status_html(html: str, url: str) -> tuple[dict[str, Any], dict[str, dict[str, Any]], dict[str, dict[str, Any]]] | None:
@@ -143,7 +148,7 @@ def _tweet_from_public_status_html(html: str, url: str) -> tuple[dict[str, Any],
     if thumbnail:
         media[media_key] = {
             "media_key": media_key,
-            "type": "video",
+            "type": _status_thumbnail_media_type(thumbnail),
             "url": None,
             "preview_image_url": thumbnail,
             "duration_ms": None,
@@ -466,6 +471,8 @@ async def _collect_x_web(db: Session, request: XCollectRequest, run: Run) -> dic
     collected = 0
     pages_seen = 0
     notes: list[str] = []
+    failed_pages = 0
+    successful_pages = 0
     seen = set()
     queue = list(dict.fromkeys(seed_urls))
     try:
@@ -475,31 +482,49 @@ async def _collect_x_web(db: Session, request: XCollectRequest, run: Run) -> dic
                 if not url or url in seen:
                     continue
                 seen.add(url)
-                page_count, discovered, page_notes = await _collect_x_web_page(db, client, source, url, request.limit - collected)
                 pages_seen += 1
+                try:
+                    with db.begin_nested():
+                        page_count, discovered, page_notes = await _collect_x_web_page(
+                            db,
+                            client,
+                            source,
+                            url,
+                            request.limit - collected,
+                        )
+                except Exception as exc:
+                    failed_pages += 1
+                    notes.append(f"Skipped {url}: {_friendly_fetch_error(exc, 'X/Twitter page')}")
+                    continue
+                successful_pages += 1
                 collected += page_count
                 notes.extend(page_notes)
                 for discovered_url in discovered:
                     normalized = _normalize_x_url(discovered_url)
                     if normalized not in seen and normalized not in queue:
                         queue.append(normalized)
-        run.status = "success"
+        run.status = "success" if successful_pages else "failed"
         run.items_collected = collected
         run.finished_at = utcnow()
+        run.error = None if successful_pages else "No requested X/Twitter pages could be fetched."
         note = None
         if notes:
             note = " ".join(dict.fromkeys(notes))
-        elif collected == 0:
+        elif collected == 0 and successful_pages:
             note = "Fetched public X/Twitter pages, but no tweet objects were exposed in the logged-out page HTML."
         db.commit()
-        return {
+        result = {
             "run_id": run.id,
             "status": run.status,
             "source_mode": "web",
             "items_collected": collected,
             "pages_seen": pages_seen,
+            "pages_failed": failed_pages,
             **({"note": note} if note else {}),
         }
+        if run.error:
+            result["error"] = run.error
+        return result
     except Exception as exc:
         db.rollback()
         run = db.get(Run, run.id)
@@ -700,16 +725,48 @@ def _upsert_search_video_lead(db: Session, source: Source, url: str, topic: str)
         raise ValueError(f"Not an X/Twitter status URL: {url}")
     handle, status_id = match.group(1), match.group(2)
     normalized_url = f"https://x.com/{handle}/status/{status_id}"
-    topic_note = f"Search topic: {topic.strip() or handle}. Search-discovered X/Twitter video lead."
+    topic_note = (
+        f"Search topic: {topic.strip() or handle}. Search-discovered X/Twitter status lead; "
+        "video/media could not be verified."
+    )
     item = db.query(Item).filter(Item.source_id == source.id, Item.external_id == status_id).one_or_none()
     if item:
-        if topic_note not in (item.self_text or ""):
-            item.self_text = f"{item.self_text or ''}\n{topic_note}".strip()
-            db.flush()
-            rank_item(db, item)
+        try:
+            raw_metadata = json.loads(item.raw_json or "{}")
+        except json.JSONDecodeError:
+            raw_metadata = {}
+        if raw_metadata.get("free_web_search_discovered"):
+            item.is_video = False
+            item.title_or_text = item.title_or_text.replace(
+                "Search-discovered Twitter/X video lead",
+                "Search-discovered Twitter/X status lead",
+            )
+            item.self_text = (item.self_text or "").replace(
+                "Search-discovered X/Twitter video lead.",
+                "Search-discovered X/Twitter status lead; video/media could not be verified.",
+            )
+            item.metrics_json = _json({"free_web_search_status_result": 1, "video_verified": 0})
+            raw_metadata["note"] = (
+                "Created from a free web search result because X/Twitter metadata was not exposed. "
+                "The status URL is retained as a lead, but it is not classified as video without media evidence."
+            )
+            item.raw_json = _json(raw_metadata)
+            if topic_note not in (item.self_text or ""):
+                item.self_text = f"{item.self_text or ''}\n{topic_note}".strip()
+        else:
+            topics = raw_metadata.get("web_search_discovery_topics")
+            if not isinstance(topics, list):
+                topics = []
+            clean_topic = topic.strip()
+            if clean_topic and clean_topic not in topics:
+                topics.append(clean_topic)
+            raw_metadata["web_search_discovery_topics"] = topics
+            item.raw_json = _json(raw_metadata)
+        db.flush()
+        rank_item(db, item)
         return item, False
 
-    title = f"Search-discovered Twitter/X video lead for {topic.strip() or handle}"
+    title = f"Search-discovered Twitter/X status lead for {topic.strip() or handle}"
     item = Item(
         source_id=source.id,
         external_id=status_id,
@@ -719,14 +776,17 @@ def _upsert_search_video_lead(db: Session, source: Source, url: str, topic: str)
         permalink=normalized_url,
         domain="x.com",
         self_text=topic_note,
-        is_video=True,
-        metrics_json=_json({"free_web_search_video_result": 1}),
+        is_video=False,
+        metrics_json=_json({"free_web_search_status_result": 1, "video_verified": 0}),
         raw_json=_json(
             {
                 "free_web_search_discovered": True,
                 "discovery_topic": topic,
                 "source_url": normalized_url,
-                "note": "Created from free web search result because X/Twitter metadata was not exposed.",
+                "note": (
+                    "Created from a free web search result because X/Twitter metadata was not exposed. "
+                    "The status URL is retained as a lead, but it is not classified as video without media evidence."
+                ),
             }
         ),
     )
@@ -1015,7 +1075,7 @@ async def collect_x_from_archive_search(db: Session, request: XArchiveSearchRequ
             db.commit()
     result["source_mode"] = source_mode
     result["urls_discovered"] = len(urls)
-    result["web_search_video_leads_created"] = fallback_created
+    result["web_search_status_leads_created"] = fallback_created
     result["discovered_urls"] = urls
     result["pages_seen"] = pages_seen
     if notes:
@@ -1025,8 +1085,9 @@ async def collect_x_from_archive_search(db: Session, request: XArchiveSearchRequ
         result["note"] = " ".join(note_parts)
     if fallback_created:
         lead_note = (
-            f"Added {fallback_created} search-discovered Twitter/X video lead"
-            f"{'' if fallback_created == 1 else 's'} because X/Twitter metadata was not exposed."
+            f"Added {fallback_created} search-discovered Twitter/X status lead"
+            f"{'' if fallback_created == 1 else 's'} because X/Twitter metadata was not exposed. "
+            "They are not classified as videos unless media can be verified."
         )
         result["note"] = f"{result.get('note', '')} {lead_note}".strip()
     return result

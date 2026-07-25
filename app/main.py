@@ -50,7 +50,7 @@ h1 { font-size:32px; margin:0 0 8px; letter-spacing:0; }
 h2 { font-size:18px; margin:0 0 12px; letter-spacing:0; }
 p { margin:0 0 12px; }
 .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:18px; margin:0 0 18px; }
-.stats { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:12px; margin:10px 0 18px; }
+.stats { display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); gap:12px; margin:10px 0 18px; }
 .stats div { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; }
 .stats strong { display:block; font-size:28px; }
 .stats span, .muted { color:var(--muted); }

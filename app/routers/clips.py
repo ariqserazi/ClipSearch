@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -12,6 +12,7 @@ from app.ranking import rank_all
 from app.reports import since_for_window
 
 router = APIRouter()
+UNVERIFIED_WEB_SEARCH_MARKER = "free_web_search_discovered"
 
 
 def load_json(value: str, fallback):
@@ -28,6 +29,7 @@ def latest_ranking_subquery(db: Session):
 def serialize_item(item: Item, ranking: Ranking | None = None, include_raw: bool = False) -> dict[str, Any]:
     source_name = item.source.name if item.source else "unknown"
     latest = ranking or (item.rankings[-1] if item.rankings else None)
+    is_video = bool(item.is_video and UNVERIFIED_WEB_SEARCH_MARKER not in (item.raw_json or ""))
     media = [
         {
             "type": entry.media_type,
@@ -53,9 +55,9 @@ def serialize_item(item: Item, ranking: Ranking | None = None, include_raw: bool
         "subreddit": item.subreddit,
         "domain": item.domain,
         "flair": item.flair,
-        "is_video": item.is_video,
+        "is_video": is_video,
         "metrics": load_json(item.metrics_json, {}),
-        "media": {"items": media, "has_video": item.is_video or bool(media)},
+        "media": {"items": media, "has_video": is_video},
         "drama_score": latest.drama_score if latest else 0,
         "potential_label": latest.potential_label if latest else "low potential",
         "reasoning": latest.reasoning if latest else "Not ranked yet.",
@@ -94,13 +96,19 @@ def query_ranked_items(
         .join(Source, Source.id == Item.source_id)
         .filter(Item.deleted_or_removed.is_(False), Ranking.drama_score >= min_drama_score)
     )
-    if source != "all":
+    if source == "reddit_x":
+        query = query.filter(Source.name.in_(("reddit", "x")))
+    elif source != "all":
         query = query.filter(Source.name == source)
     since = since_for_window(time_window)
     if since:
         query = query.filter(or_(Item.created_time.is_(None), Item.created_time >= since))
     if has_video is not None:
-        query = query.filter(Item.is_video.is_(has_video))
+        unverified_web_search_lead = Item.raw_json.ilike(f"%{UNVERIFIED_WEB_SEARCH_MARKER}%")
+        if has_video:
+            query = query.filter(Item.is_video.is_(True), ~unverified_web_search_lead)
+        else:
+            query = query.filter(or_(Item.is_video.is_(False), unverified_web_search_lead))
     if account:
         clean_account = account.strip().lstrip("@")
         if clean_account:
@@ -112,7 +120,7 @@ def query_ranked_items(
             )
             if source == "x":
                 query = query.filter(x_account_match)
-            elif source == "all":
+            elif source in {"all", "reddit_x"}:
                 query = query.filter(or_(Source.name != "x", x_account_match))
     if keyword:
         tokens = [part.strip() for part in keyword.split() if part.strip()]
@@ -122,7 +130,10 @@ def query_ranked_items(
                 *[
                     condition
                     for pattern in patterns
-                    for condition in (Item.title_or_text.ilike(pattern), Item.self_text.ilike(pattern))
+                    for condition in (
+                        Item.title_or_text.ilike(pattern),
+                        and_(Source.name != "x", Item.self_text.ilike(pattern)),
+                    )
                 ]
             )
         )
@@ -131,7 +142,7 @@ def query_ranked_items(
 
 @router.get("/clips")
 def list_clips(
-    source: str = Query("all", pattern="^(reddit|x|all)$"),
+    source: str = Query("all", pattern="^(reddit|x|reddit_x|kiwifarms|all)$"),
     min_drama_score: float = Query(0, ge=0, le=100),
     time_window: str = Query("week", pattern="^(day|week|month|year|all)$"),
     has_video: bool | None = None,

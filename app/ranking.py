@@ -70,7 +70,10 @@ def rank_item(db: Session, item: Item) -> Ranking:
     comment_text = " ".join(comment.body.lower() for comment in comments[:10])
 
     score_value = float(metrics.get("score") or metrics.get("like_count") or metrics.get("retweet_count") or 0)
-    comment_count = float(metrics.get("num_comments") or metrics.get("reply_count") or 0)
+    comment_count = float(metrics.get("num_comments") or metrics.get("reply_count") or metrics.get("replies") or 0)
+    view_count = float(metrics.get("view_count") or metrics.get("views") or 0)
+    query_occurrences = float(metrics.get("query_occurrences") or 0)
+    embedded_media_count = float(metrics.get("embedded_media_count") or len(item.media) or 0)
     upvote_ratio = float(metrics.get("upvote_ratio") or 0)
     age_hours = _age_hours(item.created_time)
 
@@ -86,6 +89,9 @@ def rank_item(db: Session, item: Item) -> Ranking:
     comment_intensity_hits = [word for word in INTENSITY_WORDS if word in comment_text]
     comment_intensity_points = min(12.0, len(comment_intensity_hits) * 2.0)
     ratio_points = 4.0 if upvote_ratio >= 0.85 else 0.0
+    view_points = min(8.0, math.log1p(max(view_count, 0)) * 0.8)
+    relevance_points = min(12.0, max(query_occurrences, 0) * 3.0)
+    multiple_media_points = min(4.0, max(embedded_media_count - 1, 0) * 2.0)
 
     total = min(
         100.0,
@@ -97,12 +103,18 @@ def rank_item(db: Session, item: Item) -> Ranking:
         + recent_points
         + streamer_points
         + comment_intensity_points
-        + ratio_points,
+        + ratio_points
+        + view_points
+        + relevance_points
+        + multiple_media_points,
     )
 
     reasons: list[str] = []
     if comment_count:
-        reasons.append(f"{int(comment_count)} comments")
+        label = "replies" if item.source and item.source.type == "forum" else "comments"
+        reasons.append(f"{int(comment_count)} {label}")
+    if view_count:
+        reasons.append(f"{int(view_count)} views")
     if score_value:
         reasons.append(f"engagement score {int(score_value)}")
     if velocity_points >= 6:
@@ -111,6 +123,10 @@ def rank_item(db: Session, item: Item) -> Ranking:
         reasons.append("matched keywords: " + ", ".join(keyword_hits[:4]))
     if item.is_video or item.media:
         reasons.append("has video or media metadata")
+    if embedded_media_count > 1:
+        reasons.append(f"{int(embedded_media_count)} independent media links")
+    if query_occurrences:
+        reasons.append(f"query matched {int(query_occurrences)} time{'s' if query_occurrences != 1 else ''}")
     if streamer_hits:
         reasons.append("matched configured streamer names")
     if comment_intensity_hits:
