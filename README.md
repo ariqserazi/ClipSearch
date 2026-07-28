@@ -4,6 +4,8 @@ Drama Clip Scout is a local Docker application for finding, ranking, reviewing, 
 
 Drama Clip Scout is a research aid, not a fact-checker. Every result is a lead to review against its linked source before making a claim.
 
+Hermes integration is optional. The dashboard, API, collectors, reports, and downloader all work as a standalone local application.
+
 ## What It Does
 
 - Collects Reddit posts through public web pages or the Reddit API.
@@ -61,6 +63,16 @@ After startup, open:
 - [Drama Clip Scout dashboard](http://127.0.0.1:8787/ui)
 - [FastAPI documentation](http://127.0.0.1:8787/docs)
 - [Hermes dashboard](http://127.0.0.1:9119), when Hermes is running
+
+Verify that the API is ready:
+
+```bash
+curl -sS http://127.0.0.1:8787/health
+```
+
+The response should contain `"status": "ok"`. Source-specific `configured` values report whether optional credentials or bridge settings are available; they do not prevent the app from starting.
+
+`./setup.sh` is normally needed only once. Use `./start.sh` to build and start the app again later, and `./stop.sh` to stop it without removing stored data.
 
 ## URLs and Docker Networking
 
@@ -324,6 +336,7 @@ Interactive schemas and request forms are available at [http://127.0.0.1:8787/do
 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
+| `GET` | `/downloads/files/{file_path}` | Save a previously downloaded file through the browser |
 | `POST` | `/downloads/items/{item_id}` | Download one item’s media with `yt-dlp` |
 | `POST` | `/downloads/links` | Download up to 100 mixed X/Twitter, YouTube, and Reddit links |
 | `POST` | `/downloads/x-links` | Compatibility alias for the unified link downloader |
@@ -647,6 +660,35 @@ Run:
 ./setup.sh
 ./start.sh
 ```
+
+## Local Development
+
+Docker is the recommended way to run the complete application because the image includes `ffmpeg`, Deno, and `yt-dlp`. For API development and tests, you can also use Python 3.12 or newer:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -r requirements.txt
+mkdir -p data
+DATABASE_URL=sqlite:///./data/clips.db \
+  uvicorn app.main:app --reload --host 127.0.0.1 --port 8787
+```
+
+When running directly on the host, install `ffmpeg` and Deno separately if you need the same download support as the Docker image.
+
+### Project Layout
+
+| Path | Purpose |
+| --- | --- |
+| `app/main.py` | FastAPI application setup and shared UI styles |
+| `app/routers/` | Dashboard, collection, search, report, and download endpoints |
+| `app/reddit_client.py` | Reddit API and public-web collection |
+| `app/x_client.py` | X API, public-page, web-search, and archive collection |
+| `app/kiwifarms_client.py` | Bridge and legacy public-search collection |
+| `app/ranking.py` | Lead scoring and potential labels |
+| `app/models.py` | SQLAlchemy database models |
+| `tests/` | Unit tests and saved HTML fixtures |
+| `data/` | Persistent SQLite data and downloaded files; not baked into the image |
 
 ## Tests
 
