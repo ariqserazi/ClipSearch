@@ -17,7 +17,7 @@ Hermes integration is optional. The dashboard, API, collectors, reports, and dow
 - Filters by source, time window, score, keywords, X account, and verified-video status.
 - Generates browser and Markdown reports.
 - Copies links and ready-to-run `yt-dlp` commands.
-- Downloads mixed batches of pasted X/Twitter, YouTube, and Reddit video links without requiring prior collection.
+- Downloads mixed batches of pasted X/Twitter, YouTube, Reddit, Instagram, and Twitch media links without requiring prior collection.
 - Optionally downloads media into the local `data/downloads/` directory.
 - Gives Hermes a structured `/agent/search-clips` endpoint.
 
@@ -155,7 +155,7 @@ Collection failures are isolated by source. A Kiwi Farms outage or one dead X st
 
 ### Multi-link Downloader
 
-The dashboard includes one `Multi-link Downloader` panel. Paste up to 100 mixed X/Twitter, YouTube, and Reddit links, one per line, then press `Download links`.
+The dashboard includes one `Multi-link Downloader` panel. Paste up to 100 mixed X/Twitter, YouTube, Reddit, Instagram, Twitch, Kick, and Rumble links, one per line, then press `Download links`.
 
 The batch downloader:
 
@@ -164,6 +164,10 @@ The batch downloader:
 - Saves a PNG tweet-card screenshot when an X post has no downloadable video. Photo posts receive both the original photo and the screenshot.
 - Accepts YouTube watch, Shorts, live, embed, and `youtu.be` links.
 - Accepts Reddit post, `redd.it`, and `v.redd.it` links.
+- Saves the original image from photo-only Instagram posts while continuing to download Instagram videos normally.
+- Accepts Twitch clips, VODs, and live channel links. A live channel must currently be streaming.
+- Accepts Kick clips, VODs, and live channel links. A live channel must currently be streaming.
+- Accepts Rumble video, embed, and livestream links.
 - Normalizes alternate link formats and removes duplicate videos or posts.
 - Runs up to two downloads concurrently.
 - Reports success or failure for every unique link.
@@ -338,7 +342,7 @@ Interactive schemas and request forms are available at [http://127.0.0.1:8787/do
 | --- | --- | --- |
 | `GET` | `/downloads/files/{file_path}` | Save a previously downloaded file through the browser |
 | `POST` | `/downloads/items/{item_id}` | Download one item’s media with `yt-dlp` |
-| `POST` | `/downloads/links` | Download up to 100 mixed X/Twitter, YouTube, and Reddit links |
+| `POST` | `/downloads/links` | Download up to 100 mixed X/Twitter, YouTube, Reddit, Instagram, Twitch, Kick, and Rumble links |
 | `POST` | `/downloads/x-links` | Compatibility alias for the unified link downloader |
 
 ### Shared Search Values
@@ -547,7 +551,7 @@ Example:
 curl -sS -X POST http://127.0.0.1:8787/downloads/items/123
 ```
 
-Download a mixed set of X/Twitter, YouTube, and Reddit links:
+Download a mixed set of X/Twitter, YouTube, Reddit, Instagram, Twitch, Kick, and Rumble links:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8787/downloads/links \
@@ -556,7 +560,11 @@ curl -sS -X POST http://127.0.0.1:8787/downloads/links \
     "urls": [
       "https://x.com/example/status/1234567890",
       "https://www.youtube.com/watch?v=abcdefghijk",
-      "https://www.reddit.com/r/videos/comments/abc123/example/"
+      "https://www.reddit.com/r/videos/comments/abc123/example/",
+      "https://www.instagram.com/reel/DbRJmS-pUBT/",
+      "https://clips.twitch.tv/ExampleClipSlug",
+      "https://kick.com/example/clips/clip_01J8RGZRKHXHXXKJEHGRM932A5",
+      "https://rumble.com/v6abcde-example-video.html"
     ]
   }'
 ```
@@ -577,7 +585,7 @@ docker exec drama-clip-scout \
   "https://example.com/video-or-post-url"
 ```
 
-X/Twitter, YouTube, or Reddit downloads may still fail when the source blocks logged-out access, requires cookies, removes the post, or restricts the media. X screenshots require the post text to be available either in the local collection database or in the public status-page metadata.
+X/Twitter, YouTube, Reddit, Instagram, Twitch, Kick, or Rumble downloads may still fail when the source blocks logged-out access, requires cookies, removes the post, or restricts the media. Twitch and Kick channel links also fail when the channel is offline. X screenshots require the post text to be available either in the local collection database or in the public status-page metadata.
 
 ## Storage and Ranking
 

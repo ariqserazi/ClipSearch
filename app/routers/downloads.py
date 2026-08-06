@@ -7,7 +7,7 @@ import shutil
 import tempfile
 import unicodedata
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
@@ -32,6 +32,27 @@ MAX_IMAGE_BYTES = 30 * 1024 * 1024
 X_STATUS_PATH_RE = re.compile(r"^/([A-Za-z0-9_]{1,20})/status(?:es)?/(\d+)(?:/.*)?$", re.IGNORECASE)
 YOUTUBE_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,20}$")
 REDDIT_POST_PATH_RE = re.compile(r"/comments/([A-Za-z0-9]+)/", re.IGNORECASE)
+INSTAGRAM_MEDIA_PATH_RE = re.compile(
+    r"^/(p|reel|reels|tv)/([A-Za-z0-9_-]{5,64})(?:/.*)?$",
+    re.IGNORECASE,
+)
+TWITCH_CLIP_SLUG_RE = re.compile(r"^[A-Za-z0-9_-]{3,128}$")
+TWITCH_CHANNEL_RE = re.compile(r"^[A-Za-z0-9_]{1,25}$")
+KICK_CHANNEL_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+KICK_CLIP_ID_RE = re.compile(r"^clip_[A-Za-z0-9_-]{3,128}$", re.IGNORECASE)
+KICK_VOD_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+RUMBLE_VIDEO_PATH_RE = re.compile(
+    r"^/(?P<id>v(?!ideos(?:$|[-.]))[A-Za-z0-9]+)(?:[-.][^/]*)?/?$",
+    re.IGNORECASE,
+)
+RUMBLE_EMBED_PATH_RE = re.compile(
+    r"^/embed/(?:[0-9a-z]+\.)?(?P<id>[0-9a-z]+)/?$",
+    re.IGNORECASE,
+)
+ARCTIC_SHIFT_POSTS_BY_ID_URL = "https://arctic-shift.photon-reddit.com/api/posts/ids"
 X_HOSTS = {
     "x.com",
     "www.x.com",
@@ -60,6 +81,55 @@ REDDIT_HOSTS = {
     "www.redd.it",
     "v.redd.it",
 }
+INSTAGRAM_HOSTS = {
+    "instagram.com",
+    "www.instagram.com",
+    "m.instagram.com",
+}
+TWITCH_HOSTS = {
+    "twitch.tv",
+    "www.twitch.tv",
+    "m.twitch.tv",
+    "go.twitch.tv",
+    "clips.twitch.tv",
+    "www.clips.twitch.tv",
+}
+KICK_HOSTS = {
+    "kick.com",
+    "www.kick.com",
+}
+RUMBLE_HOSTS = {
+    "rumble.com",
+    "www.rumble.com",
+}
+TWITCH_RESERVED_PATHS = {
+    "creatorcamp",
+    "directory",
+    "downloads",
+    "drops",
+    "inventory",
+    "jobs",
+    "p",
+    "search",
+    "settings",
+    "store",
+    "subscriptions",
+    "turbo",
+    "videos",
+    "wallet",
+}
+KICK_RESERVED_PATHS = {
+    "auth",
+    "browse",
+    "categories",
+    "clips",
+    "communities",
+    "dashboard",
+    "following",
+    "search",
+    "video",
+    "videos",
+}
 IMAGE_EXTENSIONS = {
     "image/gif": ".gif",
     "image/jpeg": ".jpg",
@@ -86,6 +156,19 @@ class XSnapshot:
     created_at: str | None = None
     metrics: dict[str, Any] | None = None
     image_urls: list[str] | None = None
+
+
+@dataclass
+class RedditSnapshot:
+    title: str
+    body: str
+    author: str
+    subreddit: str
+    url: str
+    post_id: str
+    created_at: str | None = None
+    score: int | None = None
+    comment_count: int | None = None
 
 
 def _safe_segment(value: str | None, fallback: str, *, max_length: int = 80, lowercase: bool = False) -> str:
@@ -143,6 +226,102 @@ def _x_snapshot_from_item(item: Item) -> XSnapshot:
         created_at=item.created_time.isoformat() if item.created_time else None,
         metrics=_load_json(item.metrics_json, {}),
         image_urls=list(dict.fromkeys(image_urls)),
+    )
+
+
+def _reddit_snapshot_from_item(item: Item) -> RedditSnapshot:
+    raw = _load_json(item.raw_json, {})
+    metrics = _load_json(item.metrics_json, {})
+    permalink = item.permalink or item.url
+    try:
+        normalized_url, post_id = _normalize_reddit_url(permalink)
+    except ValueError:
+        normalized_url = permalink
+        post_id = item.external_id
+    return RedditSnapshot(
+        title=_decode_html_entities(item.title_or_text),
+        body=_decode_html_entities(item.self_text or (raw.get("selftext") if isinstance(raw, dict) else "")),
+        author=str(item.author_name or (raw.get("author") if isinstance(raw, dict) else "") or "unknown"),
+        subreddit=str(item.subreddit or (raw.get("subreddit") if isinstance(raw, dict) else "") or "reddit"),
+        url=normalized_url,
+        post_id=post_id,
+        created_at=item.created_time.isoformat() if item.created_time else None,
+        score=metrics.get("score") if isinstance(metrics.get("score"), int) else None,
+        comment_count=metrics.get("num_comments") if isinstance(metrics.get("num_comments"), int) else None,
+    )
+
+
+async def _fetch_reddit_snapshot(url: str) -> RedditSnapshot:
+    normalized_url, post_id = _normalize_reddit_url(url)
+    json_url = f"https://www.reddit.com/comments/{post_id}.json"
+    async with httpx.AsyncClient(**web_client_kwargs(timeout=30.0, follow_redirects=True)) as client:
+        try:
+            response = await client.get(json_url, params={"raw_json": "1", "limit": "1"})
+            response.raise_for_status()
+            payload = response.json()
+            post = payload[0]["data"]["children"][0]["data"]
+            return _reddit_snapshot_from_post_data(post, normalized_url, post_id)
+        except (httpx.HTTPError, IndexError, KeyError, TypeError, ValueError):
+            pass
+
+        try:
+            response = await client.get(
+                ARCTIC_SHIFT_POSTS_BY_ID_URL,
+                params={"ids": post_id},
+            )
+            response.raise_for_status()
+            post = response.json()["data"][0]
+            return _reddit_snapshot_from_post_data(post, normalized_url, post_id)
+        except (httpx.HTTPError, IndexError, KeyError, TypeError, ValueError):
+            pass
+
+        response = await client.get(
+            "https://www.reddit.com/oembed",
+            params={"url": normalized_url},
+        )
+        response.raise_for_status()
+        payload = response.json()
+
+    title = _decode_html_entities(payload.get("title")).strip()
+    if not title:
+        raise ValueError("Reddit did not expose enough public post data to create a screenshot")
+    embed_html = _decode_html_entities(payload.get("html"))
+    subreddit_match = re.search(r"https?://(?:www\.)?reddit\.com/r/([^/\"']+)", embed_html, re.IGNORECASE)
+    if not subreddit_match:
+        subreddit_match = re.search(r"/r/([^/]+)", urlparse(normalized_url).path, re.IGNORECASE)
+    return RedditSnapshot(
+        title=title,
+        body="",
+        author=str(payload.get("author_name") or "unknown"),
+        subreddit=subreddit_match.group(1) if subreddit_match else "reddit",
+        url=normalized_url,
+        post_id=post_id,
+    )
+
+
+def _reddit_snapshot_from_post_data(
+    post: dict[str, Any],
+    normalized_url: str,
+    post_id: str,
+) -> RedditSnapshot:
+    title = _decode_html_entities(post.get("title")).strip()
+    if not title:
+        raise ValueError("Reddit post data did not include a title")
+    permalink = post.get("permalink")
+    snapshot_url = f"https://www.reddit.com{permalink}" if permalink else normalized_url
+    created_at = None
+    if isinstance(post.get("created_utc"), (int, float)):
+        created_at = datetime.fromtimestamp(post["created_utc"], tz=timezone.utc).isoformat()
+    return RedditSnapshot(
+        title=title,
+        body=_decode_html_entities(post.get("selftext")),
+        author=str(post.get("author") or "unknown"),
+        subreddit=str(post.get("subreddit") or "reddit"),
+        url=snapshot_url,
+        post_id=str(post.get("id") or post_id),
+        created_at=created_at,
+        score=post.get("score") if isinstance(post.get("score"), int) else None,
+        comment_count=post.get("num_comments") if isinstance(post.get("num_comments"), int) else None,
     )
 
 
@@ -272,6 +451,20 @@ def _wrap_tweet_text(draw, value: str, font, max_width: int) -> list[str]:
     return lines
 
 
+def _fit_text(draw, value: str, font, max_width: int) -> str:
+    if draw.textlength(value, font=font) <= max_width:
+        return value
+    suffix = "..."
+    low, high = 0, len(value)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if draw.textlength(f"{value[:middle]}{suffix}", font=font) <= max_width:
+            low = middle
+        else:
+            high = middle - 1
+    return f"{value[:low]}{suffix}"
+
+
 def _metric_text(metrics: dict[str, Any] | None) -> str:
     values = metrics or {}
     parts = []
@@ -365,9 +558,148 @@ def _render_tweet_screenshot(snapshot: XSnapshot, destination: Path) -> Path:
     draw.line((card_left + horizontal_padding, card_bottom - 72, card_right - horizontal_padding, card_bottom - 72), fill="#eff3f4", width=2)
     draw.text(
         (card_left + horizontal_padding, card_bottom - 48),
-        snapshot.url,
+        _fit_text(draw, snapshot.url, footer_font, card_width - (horizontal_padding * 2)),
         font=footer_font,
         fill="#536471",
+        anchor="lm",
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    image.save(destination, format="PNG", optimize=True)
+    return destination
+
+
+def _render_reddit_screenshot(snapshot: RedditSnapshot, destination: Path) -> Path:
+    from PIL import Image, ImageDraw
+
+    canvas_width = 1200
+    card_width = 1040
+    horizontal_padding = 72
+    title_font = _tweet_font(40, bold=True)
+    body_font = _tweet_font(32)
+    meta_font = _tweet_font(25)
+    footer_font = _tweet_font(21)
+    scratch = Image.new("RGB", (canvas_width, 200), "white")
+    scratch_draw = ImageDraw.Draw(scratch)
+
+    clean_title = (snapshot.title or "(Untitled Reddit post)").strip()
+    clean_body = (snapshot.body or "").strip()
+    if len(clean_title) > 600:
+        clean_title = f"{clean_title[:597]}..."
+    if len(clean_body) > 5000:
+        clean_body = f"{clean_body[:4997]}..."
+    title_lines = _wrap_tweet_text(
+        scratch_draw,
+        clean_title,
+        title_font,
+        card_width - (horizontal_padding * 2),
+    )
+    body_lines = _wrap_tweet_text(
+        scratch_draw,
+        clean_body,
+        body_font,
+        card_width - (horizontal_padding * 2),
+    ) if clean_body else []
+    title_line_height = 53
+    body_line_height = 44
+    title_height = max(title_line_height, len(title_lines) * title_line_height)
+    body_height = len(body_lines) * body_line_height
+    card_height = 250 + title_height + body_height + 145
+    canvas_height = card_height + 160
+
+    image = Image.new("RGB", (canvas_width, canvas_height), "#dae0e6")
+    draw = ImageDraw.Draw(image)
+    card_left, card_top = 80, 80
+    card_right, card_bottom = card_left + card_width, card_top + card_height
+    draw.rounded_rectangle(
+        (card_left, card_top, card_right, card_bottom),
+        radius=24,
+        fill="white",
+        outline="#cccccc",
+        width=2,
+    )
+    draw.rounded_rectangle(
+        (card_left, card_top, card_left + 18, card_bottom),
+        radius=9,
+        fill="#ff4500",
+    )
+
+    header_y = card_top + 58
+    draw.ellipse(
+        (card_left + horizontal_padding, header_y, card_left + horizontal_padding + 54, header_y + 54),
+        fill="#ff4500",
+    )
+    draw.text(
+        (card_left + horizontal_padding + 27, header_y + 27),
+        "r/",
+        font=_tweet_font(18, bold=True),
+        fill="white",
+        anchor="mm",
+    )
+    draw.text(
+        (card_left + horizontal_padding + 72, header_y + 2),
+        f"r/{snapshot.subreddit}",
+        font=_tweet_font(27, bold=True),
+        fill="#1a1a1b",
+    )
+    draw.text(
+        (card_left + horizontal_padding + 72, header_y + 34),
+        f"Posted by u/{snapshot.author}",
+        font=meta_font,
+        fill="#787c7e",
+    )
+    draw.text(
+        (card_right - horizontal_padding, header_y + 22),
+        "reddit",
+        font=_tweet_font(27, bold=True),
+        fill="#ff4500",
+        anchor="rm",
+    )
+
+    title_y = card_top + 155
+    draw.multiline_text(
+        (card_left + horizontal_padding, title_y),
+        "\n".join(title_lines),
+        font=title_font,
+        fill="#1a1a1b",
+        spacing=title_line_height - title_font.size,
+    )
+    body_y = title_y + title_height + 30
+    if body_lines:
+        draw.multiline_text(
+            (card_left + horizontal_padding, body_y),
+            "\n".join(body_lines),
+            font=body_font,
+            fill="#1a1a1b",
+            spacing=body_line_height - body_font.size,
+        )
+
+    metrics: list[str] = []
+    if snapshot.score is not None:
+        metrics.append(f"{snapshot.score:,} points")
+    if snapshot.comment_count is not None:
+        metrics.append(f"{snapshot.comment_count:,} comments")
+    metrics_y = body_y + body_height + 38
+    if snapshot.created_at:
+        timestamp = _display_timestamp(snapshot.created_at)
+        if timestamp:
+            metrics.append(timestamp)
+    if metrics:
+        draw.text(
+            (card_left + horizontal_padding, metrics_y),
+            "   ·   ".join(metrics),
+            font=meta_font,
+            fill="#787c7e",
+        )
+    draw.line(
+        (card_left + horizontal_padding, card_bottom - 72, card_right - horizontal_padding, card_bottom - 72),
+        fill="#edeff1",
+        width=2,
+    )
+    draw.text(
+        (card_left + horizontal_padding, card_bottom - 46),
+        _fit_text(draw, snapshot.url, footer_font, card_width - (horizontal_padding * 2)),
+        font=footer_font,
+        fill="#787c7e",
         anchor="lm",
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -499,6 +831,139 @@ def _normalize_reddit_url(value: str) -> tuple[str, str]:
     return f"https://www.reddit.com{path}", post_id
 
 
+def _normalize_instagram_url(value: str) -> tuple[str, str]:
+    raw = value.strip()
+    if not raw:
+        raise ValueError("Empty URL")
+    if len(raw) > 2048:
+        raise ValueError("URL is too long")
+    if not raw.startswith(("http://", "https://")):
+        raw = f"https://{raw.lstrip('/')}"
+    parsed = urlparse(raw)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in {"http", "https"} or host not in INSTAGRAM_HOSTS:
+        raise ValueError("URL is not a supported Instagram link")
+
+    match = INSTAGRAM_MEDIA_PATH_RE.fullmatch(parsed.path)
+    if not match:
+        raise ValueError("URL must point to an Instagram post, Reel, or IGTV video")
+    media_kind, shortcode = match.groups()
+    canonical_kind = "reel" if media_kind.lower() in {"reel", "reels"} else media_kind.lower()
+    return f"https://www.instagram.com/{canonical_kind}/{shortcode}/", shortcode
+
+
+def _normalize_twitch_url(value: str) -> tuple[str, str]:
+    raw = value.strip()
+    if not raw:
+        raise ValueError("Empty URL")
+    if len(raw) > 2048:
+        raise ValueError("URL is too long")
+    if not raw.startswith(("http://", "https://")):
+        raw = f"https://{raw.lstrip('/')}"
+    parsed = urlparse(raw)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in {"http", "https"} or host not in TWITCH_HOSTS:
+        raise ValueError("URL is not a supported Twitch link")
+
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if host in {"clips.twitch.tv", "www.clips.twitch.tv"}:
+        if len(path_parts) != 1 or not TWITCH_CLIP_SLUG_RE.fullmatch(path_parts[0]):
+            raise ValueError("URL must point to a Twitch clip")
+        clip_slug = path_parts[0]
+        return f"https://clips.twitch.tv/{clip_slug}", f"clip-{clip_slug.lower()}"
+
+    if len(path_parts) == 3 and path_parts[1].lower() == "clip":
+        channel, _clip_path, clip_slug = path_parts
+        if not TWITCH_CHANNEL_RE.fullmatch(channel) or not TWITCH_CLIP_SLUG_RE.fullmatch(clip_slug):
+            raise ValueError("URL must point to a Twitch clip")
+        return f"https://clips.twitch.tv/{clip_slug}", f"clip-{clip_slug.lower()}"
+
+    if len(path_parts) == 2 and path_parts[0].lower() == "videos" and path_parts[1].isdigit():
+        video_id = path_parts[1]
+        return f"https://www.twitch.tv/videos/{video_id}", f"video-{video_id}"
+
+    if len(path_parts) == 1:
+        channel = path_parts[0].lower()
+        if TWITCH_CHANNEL_RE.fullmatch(channel) and channel not in TWITCH_RESERVED_PATHS:
+            return f"https://www.twitch.tv/{channel}", f"channel-{channel}"
+
+    raise ValueError("URL must point to a Twitch clip, VOD, or live channel")
+
+
+def _normalize_kick_url(value: str) -> tuple[str, str]:
+    raw = value.strip()
+    if not raw:
+        raise ValueError("Empty URL")
+    if len(raw) > 2048:
+        raise ValueError("URL is too long")
+    if not raw.startswith(("http://", "https://")):
+        raw = f"https://{raw.lstrip('/')}"
+    parsed = urlparse(raw)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in {"http", "https"} or host not in KICK_HOSTS:
+        raise ValueError("URL is not a supported Kick link")
+
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if not path_parts or not KICK_CHANNEL_RE.fullmatch(path_parts[0]):
+        raise ValueError("URL must point to a Kick clip, VOD, or live channel")
+    channel = path_parts[0].lower()
+    if channel in KICK_RESERVED_PATHS:
+        raise ValueError("URL must point to a Kick clip, VOD, or live channel")
+
+    query_clip_id = parse_qs(parsed.query).get("clip", [None])[0]
+    if len(path_parts) == 1 and query_clip_id:
+        if not KICK_CLIP_ID_RE.fullmatch(query_clip_id):
+            raise ValueError("URL must point to a Kick clip")
+        return (
+            f"https://kick.com/{channel}/clips/{query_clip_id}",
+            f"clip-{query_clip_id.lower()}",
+        )
+
+    if len(path_parts) == 3 and path_parts[1].lower() == "clips":
+        clip_id = path_parts[2]
+        if not KICK_CLIP_ID_RE.fullmatch(clip_id):
+            raise ValueError("URL must point to a Kick clip")
+        return f"https://kick.com/{channel}/clips/{clip_id}", f"clip-{clip_id.lower()}"
+
+    if len(path_parts) == 3 and path_parts[1].lower() == "videos":
+        vod_id = path_parts[2].lower()
+        if not KICK_VOD_ID_RE.fullmatch(vod_id):
+            raise ValueError("URL must point to a Kick VOD")
+        return f"https://kick.com/{channel}/videos/{vod_id}", f"video-{vod_id}"
+
+    if len(path_parts) == 1:
+        return f"https://kick.com/{channel}", f"channel-{channel}"
+
+    raise ValueError("URL must point to a Kick clip, VOD, or live channel")
+
+
+def _normalize_rumble_url(value: str) -> tuple[str, str]:
+    raw = value.strip()
+    if not raw:
+        raise ValueError("Empty URL")
+    if len(raw) > 2048:
+        raise ValueError("URL is too long")
+    if not raw.startswith(("http://", "https://")):
+        raw = f"https://{raw.lstrip('/')}"
+    parsed = urlparse(raw)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in {"http", "https"} or host not in RUMBLE_HOSTS:
+        raise ValueError("URL is not a supported Rumble link")
+
+    embed_match = RUMBLE_EMBED_PATH_RE.fullmatch(parsed.path)
+    if embed_match:
+        embed_id = embed_match.group("id").lower()
+        return f"https://rumble.com/embed/{embed_id}", f"embed-{embed_id}"
+
+    video_match = RUMBLE_VIDEO_PATH_RE.fullmatch(parsed.path)
+    if video_match:
+        video_id = video_match.group("id").lower()
+        canonical_path = parsed.path.rstrip("/")
+        return f"https://rumble.com{canonical_path}", f"video-{video_id}"
+
+    raise ValueError("URL must point to a Rumble video or livestream")
+
+
 def _normalize_download_url(value: str) -> tuple[str, str, str]:
     raw = value.strip()
     candidate = raw if raw.startswith(("http://", "https://")) else f"https://{raw.lstrip('/')}"
@@ -512,7 +977,21 @@ def _normalize_download_url(value: str) -> tuple[str, str, str]:
     if host in REDDIT_HOSTS:
         normalized_url, post_id = _normalize_reddit_url(raw)
         return normalized_url, "reddit", post_id
-    raise ValueError("Only X/Twitter, YouTube, and Reddit video/post links are supported")
+    if host in INSTAGRAM_HOSTS:
+        normalized_url, shortcode = _normalize_instagram_url(raw)
+        return normalized_url, "instagram", shortcode
+    if host in TWITCH_HOSTS:
+        normalized_url, twitch_key = _normalize_twitch_url(raw)
+        return normalized_url, "twitch", twitch_key
+    if host in KICK_HOSTS:
+        normalized_url, kick_key = _normalize_kick_url(raw)
+        return normalized_url, "kick", kick_key
+    if host in RUMBLE_HOSTS:
+        normalized_url, rumble_key = _normalize_rumble_url(raw)
+        return normalized_url, "rumble", rumble_key
+    raise ValueError(
+        "Only X/Twitter, YouTube, Reddit, Instagram, Twitch, Kick, and Rumble media links are supported"
+    )
 
 
 def _download_dir_for_link(download_root: Path = DOWNLOAD_ROOT) -> Path:
@@ -604,23 +1083,73 @@ async def _save_x_snapshot_assets(
     return attempts
 
 
-async def _run_ytdlp(url: str, target_dir: Path, timeout_seconds: int = DOWNLOAD_TIMEOUT_SECONDS) -> DownloadProcessResult:
+async def _save_reddit_snapshot_asset(
+    snapshot: RedditSnapshot,
+    target_dir: Path,
+    *,
+    filename_prefix: str = "",
+) -> list[dict[str, Any]]:
+    screenshot_path = target_dir / f"{filename_prefix}reddit-post.png"
+    try:
+        _render_reddit_screenshot(snapshot, screenshot_path)
+        return [
+            {
+                "kind": "screenshot",
+                "url": snapshot.url,
+                "path": str(screenshot_path),
+                "returncode": 0,
+                "timed_out": False,
+            }
+        ]
+    except Exception as exc:
+        return [
+            {
+                "kind": "screenshot",
+                "url": snapshot.url,
+                "returncode": 1,
+                "timed_out": False,
+                "error": str(exc),
+            }
+        ]
+
+
+def _ytdlp_download_command(url: str, target_dir: Path) -> list[str]:
+    parsed = urlparse(url)
+    is_instagram_post = (
+        (parsed.hostname or "").lower() in INSTAGRAM_HOSTS
+        and parsed.path.lower().startswith("/p/")
+    )
     command = [
         "yt-dlp",
         "--no-playlist",
-        "--restrict-filenames",
-        "--trim-filenames",
-        "180",
-        "--merge-output-format",
-        "mp4",
-        "--js-runtimes",
-        "deno",
-        "-P",
-        str(target_dir),
-        "-o",
-        "%(title).120B [%(extractor_key)s-%(id)s].%(ext)s",
-        url,
     ]
+    if is_instagram_post:
+        # Photo-only posts have no video format, but yt-dlp exposes the original
+        # post image as its highest-resolution thumbnail.
+        command.extend(["--ignore-no-formats-error", "--write-thumbnail"])
+    command.extend(
+        [
+            "--restrict-filenames",
+            "--trim-filenames",
+            "180",
+            "--merge-output-format",
+            "mp4",
+            "--js-runtimes",
+            "deno",
+            "--remote-components",
+            "ejs:github",
+            "-P",
+            str(target_dir),
+            "-o",
+            "%(title).120B [%(extractor_key)s-%(id)s].%(ext)s",
+            url,
+        ]
+    )
+    return command
+
+
+async def _run_ytdlp(url: str, target_dir: Path, timeout_seconds: int = DOWNLOAD_TIMEOUT_SECONDS) -> DownloadProcessResult:
+    command = _ytdlp_download_command(url, target_dir)
     try:
         process = await asyncio.create_subprocess_exec(
             *command,
@@ -658,6 +1187,55 @@ async def download_item_media(
         raise HTTPException(status_code=404, detail="Clip not found")
     target_dir = _download_dir_for_item(item, download_root)
     target_dir.mkdir(parents=True, exist_ok=True)
+
+    if item.source and item.source.name == "reddit":
+        snapshot = _reddit_snapshot_from_item(item)
+        attempts: list[dict[str, Any]] = []
+        stdout_parts: list[str] = []
+        stderr_parts: list[str] = []
+        item_host = (urlparse(item.url).hostname or "").lower()
+        has_external_media = item_host not in REDDIT_HOSTS
+        if item.is_video or has_external_media:
+            for url in _download_urls(item):
+                result = await _run_ytdlp(url, target_dir, timeout_seconds)
+                attempts.append(
+                    {
+                        "kind": "video" if item.is_video else "media",
+                        "url": url,
+                        "returncode": result.returncode,
+                        "timed_out": result.timed_out,
+                    }
+                )
+                if result.stdout:
+                    stdout_parts.append(f"[{url}]\n{result.stdout}")
+                if result.stderr:
+                    stderr_parts.append(f"[{url}]\n{result.stderr}")
+        if snapshot.title.strip() or snapshot.body.strip():
+            attempts.extend(await _save_reddit_snapshot_asset(snapshot, target_dir))
+
+        succeeded = sum(attempt["returncode"] == 0 for attempt in attempts)
+        status = "success" if succeeded == len(attempts) else "partial" if succeeded else "failed"
+        error_parts = [attempt["error"] for attempt in attempts if attempt.get("error")]
+        if error_parts:
+            stderr_parts.extend(error_parts)
+        return {
+            "status": status,
+            "item_id": item.id,
+            "source": "reddit",
+            "url": item.url,
+            "urls": _download_urls(item),
+            "media_count": len(attempts),
+            "media_succeeded": succeeded,
+            "media_failed": len(attempts) - succeeded,
+            "downloads": attempts,
+            "download_dir": str(target_dir),
+            "host_dir": str(Path("./data/downloads") / target_dir.relative_to(download_root)),
+            "files": _downloaded_files(target_dir, download_root),
+            "returncode": 0 if status == "success" else 1,
+            "timed_out": any(attempt["timed_out"] for attempt in attempts),
+            "stdout_tail": _tail("\n".join(stdout_parts)),
+            "stderr_tail": _tail("\n".join(stderr_parts)),
+        }
 
     if item.source and item.source.name == "x":
         snapshot = _x_snapshot_from_item(item)
@@ -793,7 +1371,7 @@ async def download_links(
                 try:
                     result = await _run_ytdlp(normalized_url, work_dir, timeout_seconds)
                 except Exception as exc:
-                    if source != "x":
+                    if source not in {"x", "reddit"}:
                         raise
                     result = DownloadProcessResult(returncode=1, stdout="", stderr=str(exc))
 
@@ -814,15 +1392,39 @@ async def download_links(
                         )
                     except Exception as exc:
                         fallback_error = str(exc)
+                elif source == "reddit":
+                    try:
+                        snapshot = await _fetch_reddit_snapshot(normalized_url)
+                        should_save_screenshot = bool(snapshot.body.strip()) or not completed_by_ytdlp
+                        if should_save_screenshot:
+                            prefix = f"reddit-{_safe_segment(snapshot.subreddit, 'reddit', lowercase=True)}-{snapshot.post_id}-"
+                            fallback_attempts = await _save_reddit_snapshot_asset(
+                                snapshot,
+                                work_dir,
+                                filename_prefix=prefix,
+                            )
+                    except Exception as exc:
+                        fallback_error = str(exc)
         except Exception:
             shutil.rmtree(work_dir, ignore_errors=True)
             raise
         files = _move_completed_files(work_dir, target_dir, download_root)
         fallback_succeeded = any(attempt["returncode"] == 0 for attempt in fallback_attempts)
-        succeeded = bool(files) and (result.returncode == 0 or fallback_succeeded)
+        instagram_image_succeeded = source == "instagram" and any(
+            Path(file["name"]).suffix.lower() in {".gif", ".jpeg", ".jpg", ".png", ".webp"}
+            for file in files
+        )
+        succeeded = bool(files) and (
+            result.returncode == 0 or fallback_succeeded or instagram_image_succeeded
+        )
+        fallback_kind = None
+        if fallback_succeeded:
+            fallback_kind = f"{source}_screenshot"
+        elif instagram_image_succeeded and result.returncode != 0:
+            fallback_kind = "instagram_image"
         stderr = result.stderr
         if fallback_error:
-            stderr = f"{stderr}\nScreenshot fallback: {fallback_error}".strip()
+            stderr = f"{stderr}\n{source.title()} screenshot: {fallback_error}".strip()
         failed_fallbacks = [attempt["error"] for attempt in fallback_attempts if attempt.get("error")]
         if failed_fallbacks:
             stderr = f"{stderr}\n" + "\n".join(failed_fallbacks)
@@ -833,7 +1435,7 @@ async def download_links(
             "status": "success" if succeeded else "failed",
             "returncode": 0 if succeeded else result.returncode,
             "timed_out": result.timed_out,
-            "fallback": "x_screenshot" if fallback_succeeded else None,
+            "fallback": fallback_kind,
             "fallback_attempts": fallback_attempts,
             "download_dir": str(target_dir),
             "host_dir": str(Path("./data/downloads") / target_dir.relative_to(download_root)),
@@ -850,7 +1452,7 @@ async def download_links(
     batch_dir = download_root / "link-downloader"
     source_counts = {
         source: sum(entry_source == source for _url, entry_source, _key in normalized)
-        for source in ("x", "youtube", "reddit")
+        for source in ("x", "youtube", "reddit", "instagram", "twitch", "kick", "rumble")
         if any(entry_source == source for _url, entry_source, _key in normalized)
     }
     return {

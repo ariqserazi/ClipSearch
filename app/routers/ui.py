@@ -229,10 +229,10 @@ def dashboard(db: Session = Depends(get_db)):
 <section class="panel">
   <div class="panel-head">
     <h2>Multi-link Downloader</h2>
-    <span class="pill">X posts &amp; photos • YouTube • Reddit</span>
+    <span class="pill">X posts &amp; photos • YouTube • Reddit • Instagram • Twitch • Kick • Rumble</span>
   </div>
-  <p class="muted">Paste up to 100 mixed links. X videos download normally, X photos save as image files, and text-only X posts save as PNG screenshots. Every file is saved under data/downloads/link-downloader.</p>
-  <textarea id="video-download-urls" rows="6" placeholder="https://x.com/user/status/1234567890&#10;https://www.youtube.com/watch?v=abcdefghijk&#10;https://www.reddit.com/r/videos/comments/abc123/example/"></textarea>
+  <p class="muted">Paste up to 100 mixed links. Twitch and Kick clips, VODs, and live channels are supported; live channels must currently be streaming. Rumble video and livestream links work too. Instagram videos download normally and photo-only posts save as image files. X photos save as image files, text-only X posts save as PNG screenshots, and Reddit posts with text do too. Every file is saved under data/downloads/link-downloader.</p>
+  <textarea id="video-download-urls" rows="8" placeholder="https://x.com/user/status/1234567890&#10;https://www.youtube.com/watch?v=abcdefghijk&#10;https://www.reddit.com/r/videos/comments/abc123/example/&#10;https://www.instagram.com/reel/DbRJmS-pUBT/&#10;https://clips.twitch.tv/ExampleClipSlug&#10;https://kick.com/example/clips/clip_01J8RGZRKHXHXXKJEHGRM932A5&#10;https://rumble.com/v6abcde-example-video.html"></textarea>
   <div class="actions command-row">
     <button id="download-video-links" type="button">Download links</button>
   </div>
@@ -432,7 +432,7 @@ function resultActions(item) {{
     actions.push(`<a class="button" href="${{esc(item.url)}}" target="_blank" rel="noreferrer">Open original</a>`);
   }}
   actions.push(`<a class="button ghost" href="/ui/clips/${{item.id}}">View details</a>`);
-  if (item.is_video || item.source === "x") actions.push(`<button class="secondary download-button" type="button" data-download-id="${{esc(item.id)}}">Download</button>`);
+  if (item.is_video || item.source === "x" || item.source === "reddit") actions.push(`<button class="secondary download-button" type="button" data-download-id="${{esc(item.id)}}">Download</button>`);
   return actions.join("");
 }}
 
@@ -517,7 +517,7 @@ async function downloadVideoLinks(button) {{
   if (!urls.length) {{
     videoDownloadStatus.hidden = false;
     videoDownloadStatus.className = "message error";
-    videoDownloadStatus.textContent = "Paste at least one X/Twitter post, YouTube video, or Reddit post link.";
+    videoDownloadStatus.textContent = "Paste at least one supported X/Twitter, YouTube, Reddit, Instagram, Twitch, Kick, or Rumble link.";
     return;
   }}
   const originalText = button.textContent;
@@ -554,9 +554,9 @@ async function downloadItem(itemId, button) {{
 }}
 
 async function downloadAllResults(button) {{
-  const itemIds = [...new Set(currentResults.filter((item) => item.is_video || item.source === "x").map((item) => String(item.id)).filter(Boolean))];
+  const itemIds = [...new Set(currentResults.filter((item) => item.is_video || item.source === "x" || item.source === "reddit").map((item) => String(item.id)).filter(Boolean))];
   if (!itemIds.length) {{
-    showMessage("No downloadable video or X post results are shown.", "error");
+    showMessage("No downloadable video, X post, or Reddit post results are shown.", "error");
     return;
   }}
   const originalText = button.textContent;
@@ -750,7 +750,7 @@ def clips_page(
         else:
             actions.append(f'<a class="button" href="{html.escape(data["url"])}" target="_blank" rel="noreferrer">Open original</a>')
         actions.append(f'<a class="button ghost" href="/ui/clips/{data["id"]}">View details</a>')
-        if data["is_video"] or data["source"] == "x":
+        if data["is_video"] or data["source"] in {"x", "reddit"}:
             actions.append(f'<button class="secondary" type="button" data-download-id="{data["id"]}">Download</button>')
         cards.append(
             f"""
