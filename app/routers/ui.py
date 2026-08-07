@@ -259,10 +259,10 @@ def dashboard(db: Session = Depends(get_db)):
     <h2>Pinterest Image Research</h2>
     <span class="pill">public pins • original images</span>
   </div>
-  <p class="muted">Describe the images you need, or leave this blank to use the person/topic or Hermes request above. The app searches public Pinterest pins and can download up to 20 matching images to data/downloads/pinterest.</p>
+  <p class="muted">Describe the images you need, or leave this blank to use the person/topic or Hermes request above. The app searches public Pinterest pins and can download up to 50 matching images to data/downloads/pinterest.</p>
   <div class="pinterest-controls" style="grid-template-columns:minmax(220px, 1fr) 110px auto auto;">
     <label>Image request<input id="pinterest-query" maxlength="300" placeholder="moody late-night streamer setup, neon lighting"></label>
-    <label>Images<input id="pinterest-limit" type="number" min="1" max="20" value="8"></label>
+    <label>Images<input id="pinterest-limit" type="number" min="1" max="50" value="8"></label>
     <button id="search-pinterest" type="button">Search</button>
     <button id="download-pinterest" type="button" class="secondary" disabled>Download all</button>
   </div>
@@ -612,7 +612,7 @@ function renderPinterestDownloadResult(data) {{
 
 async function searchPinterest(button) {{
   const query = effectivePinterestQuery();
-  const limit = Math.max(1, Math.min(20, Number(document.getElementById("pinterest-limit").value || 8)));
+  const limit = Math.max(1, Math.min(50, Number(document.getElementById("pinterest-limit").value || 8)));
   if (!query) {{
     pinterestStatus.hidden = false;
     pinterestStatus.className = "message error";

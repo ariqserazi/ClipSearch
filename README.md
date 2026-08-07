@@ -269,7 +269,7 @@ Collection failures are isolated by source. A Kiwi Farms outage or one dead X st
 
 ### Pinterest Image Research
 
-The dashboard's `Pinterest Image Research` panel accepts a description such as `moody late-night streamer setup, neon lighting`. If its image-request field is blank, it uses the current person/topic or Hermes request. `Search + Download` searches logged-out public Pinterest results and saves up to 20 original-resolution images under `./data/downloads/pinterest/<query>/`.
+The dashboard's `Pinterest Image Research` panel accepts a description such as `moody late-night streamer setup, neon lighting`. If its image-request field is blank, it uses the current person/topic or Hermes request. `Search` searches logged-out public Pinterest results and displays previews. Press `Download all` or the per-card `Download` button to save up to 50 original-resolution images under `./data/downloads/pinterest/<query>/`.
 
 Each result keeps its public pin URL, pinner name when available, dimensions, local path, preview, and `Save file` link. Pinterest results may be copyrighted; preserve the provenance link and verify permission and usage rights before republishing an image. The feature does not log in, access private boards, or bypass Pinterest access controls.
 
@@ -464,7 +464,7 @@ Interactive schemas and request forms are available at [http://127.0.0.1:8787/do
 | `POST` | `/downloads/items/{item_id}` | Download one item’s media with `yt-dlp` |
 | `POST` | `/downloads/links` | Download up to 100 mixed X/Twitter, YouTube, Reddit, Instagram, Twitch, Kick, and Rumble links |
 | `POST` | `/downloads/x-links` | Compatibility alias for the unified link downloader |
-| `POST` | `/research/pinterest-images` | Search public Pinterest pins and download up to 20 matching original images |
+| `POST` | `/research/pinterest-images` | Search public Pinterest pins and download up to 50 matching original images |
 
 ### Shared Search Values
 

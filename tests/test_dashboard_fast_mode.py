@@ -49,7 +49,7 @@ class DashboardFastModeTests(unittest.TestCase):
         self.assertIn("function renderCollectionStatus(items)", html)
         self.assertIn("Pinterest Image Research", html)
         self.assertIn('id="pinterest-query"', html)
-        self.assertIn('id="pinterest-limit" type="number" min="1" max="20" value="8"', html)
+        self.assertIn('id="pinterest-limit" type="number" min="1" max="50" value="8"', html)
         self.assertIn('id="search-pinterest"', html)
         self.assertIn('id="download-pinterest"', html)
         self.assertIn('postJson("/research/pinterest-search", { query, limit })', html)

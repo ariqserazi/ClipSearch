@@ -99,7 +99,7 @@ class AgentSearchResponse(BaseModel):
 
 class PinterestImageResearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=300)
-    limit: int = Field(default=8, ge=1, le=20)
+    limit: int = Field(default=8, ge=1, le=50)
 
 
 class LinksDownloadRequest(BaseModel):

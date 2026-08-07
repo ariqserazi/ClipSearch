@@ -137,7 +137,7 @@ async def search_public_pinterest(query: str, limit: int = 8) -> tuple[str, list
         raise ValueError("Enter a description of the Pinterest images to find")
     if len(clean_query) > 300:
         raise ValueError("Pinterest image requests must be 300 characters or fewer")
-    limit = max(1, min(int(limit), 20))
+    limit = max(1, min(int(limit), 50))
     source_url = f"/search/pins/?q={quote(clean_query, safe='')}"
     search_url = f"{PINTEREST_BASE_URL}{source_url}"
 
@@ -159,7 +159,7 @@ async def search_public_pinterest(query: str, limit: int = 8) -> tuple[str, list
                 "options": {
                     "query": clean_query,
                     "scope": "pins",
-                    "page_size": 25,
+                    "page_size": max(25, limit),
                     "enable_promoted_pins": False,
                 },
                 "context": {},
