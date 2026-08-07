@@ -228,7 +228,7 @@ def dashboard(db: Session = Depends(get_db)):
       <label>Time window<select id="time-window"><option value="day">day</option><option value="week">week</option><option value="month">month</option><option value="year">this year</option><option value="all">all time</option></select></label>
       <label>Minimum score<input id="min-score" type="number" min="0" max="100" value="0"></label>
       <label>Limit<input id="research-limit" type="number" min="25" max="5000" value="25"></label>
-      <label class="checkline"><input id="only-video" type="checkbox"> Videos only</label>
+      <label class="checkline"><input id="only-video" type="checkbox" checked> Videos only</label>
       <label class="checkline"><input id="web-search" type="checkbox" checked> Free web search</label>
       <label class="checkline"><input id="deep-search" type="checkbox"> Deep search / more results</label>
       <p class="field-note wide">Turning on deep search widens the default day window to one month. You can choose another time window afterward.</p>
