@@ -77,28 +77,53 @@ The response should contain `"status": "ok"`. Source-specific `configured` value
 
 ## Running on Windows
 
-The application runs inside a Linux Docker container, so all features work identically on Windows. The only difference is that the included `.sh` scripts are written for bash. On Windows, you can either run them through WSL2 or Git Bash, or use the equivalent PowerShell commands below.
+The application runs inside a Linux Docker container, so all features work identically on Windows. Every `.sh` script has a matching `.bat` script that works natively in Command Prompt and PowerShell — no WSL or Git Bash required.
 
 ### Requirements
 
 - [Docker Desktop for Windows](https://docs.docker.com/desktop/install/windows-install/) with WSL 2 backend enabled.
 - A checkout of this repository.
 
-### Quick Start (PowerShell)
+### Quick Start
 
-Open PowerShell in the repository directory:
+From the repository directory, run:
+
+```
+setup.bat
+start.bat
+```
+
+Or double-click `setup.bat` then `start.bat` from File Explorer.
+
+After startup, open [http://127.0.0.1:8787/ui](http://127.0.0.1:8787/ui) in a browser.
+
+### Windows Operations
+
+| Task | Script |
+| --- | --- |
+| First-time setup | `setup.bat` |
+| Start the app | `start.bat` |
+| Stop the app | `stop.bat` |
+| Rebuild and restart | `update.bat` |
+| View logs | `logs.bat` |
+| Remove the container | `reset-container.bat` |
+| Collect Reddit | `collect_reddit.bat` |
+| Collect X | `collect_x.bat` |
+| Collect all sources | `collect_all.bat` |
+
+These are functionally identical to their `.sh` counterparts documented in the Operations section.
+
+### Manual PowerShell Commands
+
+If you prefer running commands directly instead of using the `.bat` scripts:
 
 ```powershell
-# Create the Docker network (one-time setup)
+# One-time setup
 docker network create drama-net
-
-# Create .env from the example if it does not exist
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }
-
-# Create the data directory
 New-Item -ItemType Directory -Force -Path data
 
-# Build and start the app
+# Build and start
 docker compose up -d --build drama-clip-scout
 ```
 
