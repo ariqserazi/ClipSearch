@@ -37,7 +37,7 @@ Hermes integration is optional. The dashboard, API, collectors, reports, and dow
 
 - Docker Desktop or another Docker installation with Docker Compose.
 - A checkout of this repository.
-- Optional: an existing Docker container named `hermes` for Hermes integration.
+- **Hermes integration prerequisite**: Set up [hermes-dashboard](https://github.com/ariqserazi/hermes-dashboard) first before setting up Drama Clip Scout.
 - Optional: Reddit and X API credentials for their official API paths.
 
 The public web-search paths work without paid search credentials, although source sites may limit what they expose to logged-out requests.
@@ -620,6 +620,8 @@ curl -sS \
 ```
 
 ## Hermes Integration
+
+Set up [hermes-dashboard](https://github.com/ariqserazi/hermes-dashboard) first before setting up this application.
 
 Hermes should call:
 
