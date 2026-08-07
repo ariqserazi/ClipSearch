@@ -358,12 +358,13 @@ async def collect_reddit(db: Session, request: RedditCollectRequest) -> dict[str
     settings = get_settings()
     subreddit = request.subreddit or _subreddit_from_url(request.url) or settings.default_subreddit
     use_api = not request.url and (request.source_mode == "api" or (request.source_mode == "auto" and settings.reddit_configured))
-    run_mode = request.mode if use_api else ("url_web" if request.url else f"{request.mode}_web")
+    clean_query = " ".join(request.query.split()).strip() if request.query else None
+    run_mode = "search" if clean_query else (request.mode if use_api else ("url_web" if request.url else f"{request.mode}_web"))
     run = Run(
         source="reddit",
         mode=run_mode,
         status="running",
-        raw_json=_json({"subreddit": subreddit, "url": request.url, "source_mode": request.source_mode}),
+        raw_json=_json({"subreddit": subreddit, "url": request.url, "query": clean_query, "source_mode": request.source_mode}),
     )
     db.add(run)
     db.commit()
@@ -379,10 +380,16 @@ async def collect_reddit(db: Session, request: RedditCollectRequest) -> dict[str
         if use_api:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 token = await _token(client)
-                path, extra_params = _mode_path(request.mode)
+                if clean_query:
+                    endpoint_url = f"https://oauth.reddit.com/r/{subreddit}/search"
+                    query_params = {"q": clean_query, "restrict_sr": "on", "sort": "relevance", "limit": request.limit}
+                else:
+                    path, extra_params = _mode_path(request.mode)
+                    endpoint_url = f"https://oauth.reddit.com/r/{subreddit}/{path}"
+                    query_params = {"limit": request.limit, **extra_params}
                 response = await client.get(
-                    f"https://oauth.reddit.com/r/{subreddit}/{path}",
-                    params={"limit": request.limit, **extra_params},
+                    endpoint_url,
+                    params=query_params,
                     headers={"Authorization": f"Bearer {token}", "User-Agent": settings.reddit_user_agent},
                 )
                 logger.info(
@@ -408,11 +415,16 @@ async def collect_reddit(db: Session, request: RedditCollectRequest) -> dict[str
                 db.commit()
                 return {"run_id": run.id, "status": run.status, "source_mode": "api", "items_collected": collected}
         async with httpx.AsyncClient(**web_client_kwargs(timeout=30.0, follow_redirects=True)) as client:
-            path, extra_params = _mode_path(request.mode)
-            web_url = _reddit_web_url(request.url, subreddit, request.mode)
+            if clean_query:
+                web_url = f"https://old.reddit.com/r/{subreddit}/search/"
+                query_params = {"q": clean_query, "restrict_sr": "on", "sort": "relevance", "limit": request.limit}
+            else:
+                path, extra_params = _mode_path(request.mode)
+                web_url = _reddit_web_url(request.url, subreddit, request.mode)
+                query_params = {"limit": request.limit, **extra_params}
             response = await client.get(
                 web_url,
-                params={"limit": request.limit, **extra_params},
+                params=query_params,
             )
             response.raise_for_status()
             posts = _parse_listing_posts(response.text, subreddit, request.limit)

@@ -367,10 +367,13 @@ function collectPayloads() {{
   if (source === "reddit" || source === "reddit_x" || source === "all") {{
     const subreddit = document.getElementById("subreddit").value.trim();
     const redditUrl = document.getElementById("reddit-url").value.trim();
+    const person = document.getElementById("person-topic").value.trim();
+    const query = person || prompt || null;
     payloads.push(["/collect/reddit", {{
       source_mode: "web",
       subreddit: redditUrl ? null : subreddit,
       url: redditUrl || null,
+      query: query,
       mode: document.getElementById("reddit-mode").value,
       limit: redditLimit,
       top_comments_limit: redditComments
@@ -825,10 +828,22 @@ async function runResearch(onlyCollect = false) {{
     }}
     const payload = searchPayload();
     const data = await postJson("/agent/search-clips", payload);
+    const totalCollected = collected.map((item) => item.items_collected || 0).reduce((a, b) => a + b, 0);
+    const leadsFound = (data.results || []).length;
     renderResults(data.results || []);
     handoff.textContent = buildHandoffPrompt(payload);
     handoff.hidden = false;
-    showMessage(`Finished: collected ${{collected.map((item) => item.items_collected || 0).reduce((a, b) => a + b, 0)}} items and found ${{(data.results || []).length}} leads.${{noteText}}`, "success");
+    let summaryText = `Finished: collected ${{totalCollected}} items and found ${{leadsFound}} leads.`;
+    if (leadsFound === 0 && totalCollected > 0) {{
+      const activeFilters = [];
+      if (payload.has_video) activeFilters.push('"Videos only" is checked');
+      if (payload.keywords && payload.keywords.length) activeFilters.push(`keywords: [${{payload.keywords.join(", ")}}]`);
+      if (payload.time_window !== 'all') activeFilters.push(`time window: ${{payload.time_window}}`);
+      if (activeFilters.length) {{
+        summaryText += ` Note: collected items were filtered out by active search parameters (${{activeFilters.join("; ")}}). Try unchecking "Videos only" or changing the time window.`;
+      }}
+    }}
+    showMessage(`${{summaryText}}${{noteText}}`, leadsFound > 0 ? "success" : "message");
   }} catch (error) {{
     showMessage(error.message, "error");
   }} finally {{

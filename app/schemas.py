@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 class RedditCollectRequest(BaseModel):
     subreddit: str | None = None
     url: str | None = None
+    query: str | None = None
     mode: Literal["hot", "new", "rising", "top_day", "top_week"] = "hot"
     source_mode: Literal["auto", "api", "web"] = "auto"
     limit: int = Field(default=50, ge=1, le=100)
