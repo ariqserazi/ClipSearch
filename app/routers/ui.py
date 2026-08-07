@@ -228,7 +228,7 @@ def dashboard(db: Session = Depends(get_db)):
       <label>Time window<select id="time-window"><option value="day">day</option><option value="week">week</option><option value="month">month</option><option value="year">this year</option><option value="all">all time</option></select></label>
       <label>Minimum score<input id="min-score" type="number" min="0" max="100" value="0"></label>
       <label>Limit<input id="research-limit" type="number" min="25" max="5000" value="25"></label>
-      <label class="checkline"><input id="only-video" type="checkbox" checked> Videos only</label>
+      <label class="checkline"><input id="only-video" type="checkbox"> Videos only</label>
       <label class="checkline"><input id="web-search" type="checkbox" checked> Free web search</label>
       <label class="checkline"><input id="deep-search" type="checkbox"> Deep search / more results</label>
       <p class="field-note wide">Turning on deep search widens the default day window to one month. You can choose another time window afterward.</p>
@@ -488,7 +488,7 @@ function resultActions(item) {{
 function renderResults(items) {{
   currentResults = items;
   if (!items.length) {{
-    results.innerHTML = '<section class="panel empty-state">No matching leads found yet.</section>';
+    results.innerHTML = '<section class="panel empty-state">No matching items found yet.</section>';
     return;
   }}
   results.innerHTML = items.map((item) => `
@@ -817,7 +817,7 @@ async function runResearch(onlyCollect = false) {{
   handoff.hidden = true;
   collectionStatus.hidden = true;
   collectionStatus.innerHTML = "";
-  showMessage(onlyCollect ? "Collecting selected sources..." : "Collecting selected sources and searching leads...");
+  showMessage(onlyCollect ? "Collecting selected sources..." : "Collecting selected sources and finding items...");
   try {{
     const collected = await collectSources();
     const notes = collected.map((item) => item.note).filter(Boolean);
@@ -829,21 +829,21 @@ async function runResearch(onlyCollect = false) {{
     const payload = searchPayload();
     const data = await postJson("/agent/search-clips", payload);
     const totalCollected = collected.map((item) => item.items_collected || 0).reduce((a, b) => a + b, 0);
-    const leadsFound = (data.results || []).length;
+    const itemsFound = (data.results || []).length;
     renderResults(data.results || []);
     handoff.textContent = buildHandoffPrompt(payload);
     handoff.hidden = false;
-    let summaryText = `Finished: collected ${{totalCollected}} items and found ${{leadsFound}} leads.`;
-    if (leadsFound === 0 && totalCollected > 0) {{
+    let summaryText = `Finished: collected ${{totalCollected}} items and found ${{itemsFound}} items.`;
+    if (itemsFound === 0 && totalCollected > 0) {{
       const activeFilters = [];
       if (payload.has_video) activeFilters.push('"Videos only" is checked');
       if (payload.keywords && payload.keywords.length) activeFilters.push(`keywords: [${{payload.keywords.join(", ")}}]`);
       if (payload.time_window !== 'all') activeFilters.push(`time window: ${{payload.time_window}}`);
       if (activeFilters.length) {{
-        summaryText += ` Note: collected items were filtered out by active search parameters (${{activeFilters.join("; ")}}). Try unchecking "Videos only" or changing the time window.`;
+        summaryText += ` Note: collected items were filtered out by active search parameters (${{activeFilters.join("; ")}}). Try changing the time window or clearing keywords.`;
       }}
     }}
-    showMessage(`${{summaryText}}${{noteText}}`, leadsFound > 0 ? "success" : "message");
+    showMessage(`${{summaryText}}${{noteText}}`, itemsFound > 0 ? "success" : "message");
   }} catch (error) {{
     showMessage(error.message, "error");
   }} finally {{
