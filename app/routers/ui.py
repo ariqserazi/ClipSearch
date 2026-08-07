@@ -138,6 +138,34 @@ async function downloadAllStaticItems(button) {
   }
 }
 
+async function downloadSinglePinterestPin(pinId, button) {
+  const pin = pinterestPinsCache.find((p) => String(p.pin_id) === String(pinId));
+  if (!pin) return;
+  button.disabled = true;
+  button.textContent = "Downloading...";
+  try {
+    const data = await postJson("/research/pinterest-download", { query: pinterestQueryCache, pins: [pin] });
+    const download = (data.downloads || [])[0];
+    const card = button.closest(".pinterest-card");
+    if (download && download.status === "success" && download.file && card) {
+      const label = download.title || download.description || `Pinterest pin ${download.pin_id}`;
+      card.innerHTML = `<img src="${esc(download.file.download_url)}?inline=true" alt="${esc(label)}">
+        <p>${esc(label)}</p>
+        <p class="muted">${download.pinner ? `@${esc(download.pinner)} • ` : ""}${esc(download.width || "?")}×${esc(download.height || "?")}</p>
+        <div class="actions small"><a class="button ghost small-button" href="${esc(download.pin_url)}" target="_blank" rel="noreferrer">Open pin</a><a class="button ghost small-button" href="${esc(download.file.download_url)}" download>Save file</a></div>`;
+    } else {
+      button.disabled = false;
+      button.textContent = "Failed";
+    }
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "Download";
+    pinterestStatus.hidden = false;
+    pinterestStatus.className = "message error";
+    pinterestStatus.textContent = error.message;
+  }
+}
+
 document.addEventListener("click", (event) => {
   const downloadAllButton = event.target.closest("[data-download-all]");
   if (downloadAllButton) {
@@ -554,7 +582,10 @@ function renderPinterestSearchResult(data) {{
       <img src="${{esc(pin.image_url)}}" alt="${{esc(label)}}" referrerpolicy="no-referrer">
       <p>${{esc(label)}}</p>
       <p class="muted">${{pin.pinner ? `@${{esc(pin.pinner)}} • ` : ""}}${{esc(pin.width || "?")}}×${{esc(pin.height || "?")}}</p>
-      <div class="actions small"><a class="button ghost small-button" href="${{esc(pin.pin_url)}}" target="_blank" rel="noreferrer">Open pin</a></div>
+      <div class="actions small">
+        <a class="button ghost small-button" href="${{esc(pin.pin_url)}}" target="_blank" rel="noreferrer">Open pin</a>
+        <button type="button" class="button ghost small-button" data-pinterest-pin-id="${{esc(pin.pin_id)}}">Download</button>
+      </div>
     </article>`;
   }}).join("");
 }}
@@ -848,6 +879,11 @@ results.addEventListener("click", (event) => {{
   const button = event.target.closest("[data-download-id]");
   if (!button) return;
   downloadItem(button.dataset.downloadId, button);
+}});
+pinterestResults.addEventListener("click", (event) => {{
+  const button = event.target.closest("[data-pinterest-pin-id]");
+  if (!button) return;
+  downloadSinglePinterestPin(button.dataset.pinterestPinId, button);
 }});
 </script>
 """
