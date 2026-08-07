@@ -1,0 +1,19 @@
+# Force correct line endings per file type
+* text=auto
+
+# Shell scripts must stay LF (Unix) even on Windows checkouts
+*.sh text eol=lf
+
+# Batch scripts should use CRLF (Windows)
+*.bat text eol=crlf
+
+# Docker and config files stay LF
+Dockerfile text eol=lf
+docker-compose.yml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.py text eol=lf
+*.txt text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.env* text eol=lf
