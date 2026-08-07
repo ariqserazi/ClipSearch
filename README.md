@@ -75,6 +75,94 @@ The response should contain `"status": "ok"`. Source-specific `configured` value
 
 `./setup.sh` is normally needed only once. Use `./start.sh` to build and start the app again later, and `./stop.sh` to stop it without removing stored data.
 
+## Running on Windows
+
+The application runs inside a Linux Docker container, so all features work identically on Windows. The only difference is that the included `.sh` scripts are written for bash. On Windows, you can either run them through WSL2 or Git Bash, or use the equivalent PowerShell commands below.
+
+### Requirements
+
+- [Docker Desktop for Windows](https://docs.docker.com/desktop/install/windows-install/) with WSL 2 backend enabled.
+- A checkout of this repository.
+
+### Quick Start (PowerShell)
+
+Open PowerShell in the repository directory:
+
+```powershell
+# Create the Docker network (one-time setup)
+docker network create drama-net
+
+# Create .env from the example if it does not exist
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+
+# Create the data directory
+New-Item -ItemType Directory -Force -Path data
+
+# Build and start the app
+docker compose up -d --build drama-clip-scout
+```
+
+After startup, open [http://127.0.0.1:8787/ui](http://127.0.0.1:8787/ui) in a browser.
+
+Verify that the API is ready:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8787/health
+```
+
+### Optional: Connect Hermes (PowerShell)
+
+If you have an existing Docker container named `hermes`:
+
+```powershell
+docker network connect drama-net hermes
+```
+
+### Operations (PowerShell)
+
+| Bash script | PowerShell equivalent |
+| --- | --- |
+| `./start.sh` | `docker compose up -d --build drama-clip-scout` |
+| `./stop.sh` | `docker compose stop drama-clip-scout` |
+| `./update.sh` | `docker compose build drama-clip-scout; docker compose up -d --no-deps --force-recreate drama-clip-scout` |
+| `./logs.sh` | `docker compose logs -f drama-clip-scout` |
+| `./reset-container.sh` | `docker compose stop drama-clip-scout; docker rm drama-clip-scout` |
+
+### Collection Commands (PowerShell)
+
+```powershell
+# Collect Reddit
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8787/collect/reddit `
+  -ContentType 'application/json' -Body '{}'
+
+# Collect X
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8787/collect/x `
+  -ContentType 'application/json' -Body '{}'
+
+# Collect all sources
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8787/collect/all `
+  -ContentType 'application/json' -Body '{}'
+```
+
+### Using WSL2 Instead
+
+If you prefer to use the `.sh` scripts directly, open a WSL2 terminal, navigate to the repository, and run them as documented in the Quick Start section above. Docker Desktop shares the Docker daemon with WSL2, so everything works the same way.
+
+### Local Development (Windows)
+
+For API development without Docker, use Python 3.12 or newer in PowerShell:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+New-Item -ItemType Directory -Force -Path data
+$env:DATABASE_URL = "sqlite:///./data/clips.db"
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8787
+```
+
+Install `ffmpeg` and Deno separately if you need the same download support as the Docker image.
+
 ## URLs and Docker Networking
 
 | Purpose | URL |
