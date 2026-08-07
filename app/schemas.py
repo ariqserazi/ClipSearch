@@ -97,6 +97,11 @@ class AgentSearchResponse(BaseModel):
     results: list[ClipResult]
 
 
+class PinterestImageResearchRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=300)
+    limit: int = Field(default=8, ge=1, le=20)
+
+
 class LinksDownloadRequest(BaseModel):
     urls: list[str] = Field(min_length=1, max_length=100)
 

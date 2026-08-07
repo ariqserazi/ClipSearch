@@ -17,6 +17,7 @@ Hermes integration is optional. The dashboard, API, collectors, reports, and dow
 - Filters by source, time window, score, keywords, X account, and verified-video status.
 - Generates browser and Markdown reports.
 - Copies links and ready-to-run `yt-dlp` commands.
+- Searches public Pinterest pins from a plain-language image request and downloads matching original images with provenance links.
 - Downloads mixed batches of pasted X/Twitter, YouTube, Reddit, Instagram, and Twitch media links without requiring prior collection.
 - Optionally downloads media into the local `data/downloads/` directory.
 - Gives Hermes a structured `/agent/search-clips` endpoint.
@@ -152,6 +153,12 @@ Clear the checkbox when you also want unverified status leads and text-only sour
 - Per-card `Download`: downloads one result.
 
 Collection failures are isolated by source. A Kiwi Farms outage or one dead X status URL does not discard successful results from the other selected sources or URLs.
+
+### Pinterest Image Research
+
+The dashboard's `Pinterest Image Research` panel accepts a description such as `moody late-night streamer setup, neon lighting`. If its image-request field is blank, it uses the current person/topic or Hermes request. `Search + Download` searches logged-out public Pinterest results and saves up to 20 original-resolution images under `./data/downloads/pinterest/<query>/`.
+
+Each result keeps its public pin URL, pinner name when available, dimensions, local path, preview, and `Save file` link. Pinterest results may be copyrighted; preserve the provenance link and verify permission and usage rights before republishing an image. The feature does not log in, access private boards, or bypass Pinterest access controls.
 
 ### Multi-link Downloader
 
@@ -344,6 +351,7 @@ Interactive schemas and request forms are available at [http://127.0.0.1:8787/do
 | `POST` | `/downloads/items/{item_id}` | Download one item’s media with `yt-dlp` |
 | `POST` | `/downloads/links` | Download up to 100 mixed X/Twitter, YouTube, Reddit, Instagram, Twitch, Kick, and Rumble links |
 | `POST` | `/downloads/x-links` | Compatibility alias for the unified link downloader |
+| `POST` | `/research/pinterest-images` | Search public Pinterest pins and download up to 20 matching original images |
 
 ### Shared Search Values
 
@@ -549,6 +557,20 @@ Example:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8787/downloads/items/123
+```
+
+Search Pinterest and download matching images:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8787/research/pinterest-images \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"moody late-night streamer setup, neon lighting","limit":8}'
+```
+
+Pinterest image research files are stored under:
+
+```text
+./data/downloads/pinterest/<query>/
 ```
 
 Download a mixed set of X/Twitter, YouTube, Reddit, Instagram, Twitch, Kick, and Rumble links:

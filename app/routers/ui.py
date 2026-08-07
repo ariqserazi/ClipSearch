@@ -228,6 +228,22 @@ def dashboard(db: Session = Depends(get_db)):
 </section>
 <section class="panel">
   <div class="panel-head">
+    <h2>Pinterest Image Research</h2>
+    <span class="pill">public pins • original images</span>
+  </div>
+  <p class="muted">Describe the images you need, or leave this blank to use the person/topic or Hermes request above. The app searches public Pinterest pins and can download up to 20 matching images to data/downloads/pinterest.</p>
+  <div class="pinterest-controls" style="grid-template-columns:minmax(220px, 1fr) 110px auto auto;">
+    <label>Image request<input id="pinterest-query" maxlength="300" placeholder="moody late-night streamer setup, neon lighting"></label>
+    <label>Images<input id="pinterest-limit" type="number" min="1" max="20" value="8"></label>
+    <button id="search-pinterest" type="button">Search</button>
+    <button id="download-pinterest" type="button" class="secondary" disabled>Download all</button>
+  </div>
+  <p class="field-note">Public results can be copyrighted. Keep the pin links for provenance and verify usage rights before republishing an image.</p>
+  <div id="pinterest-status" class="message" hidden></div>
+  <div id="pinterest-results" class="pinterest-gallery"></div>
+</section>
+<section class="panel">
+  <div class="panel-head">
     <h2>Multi-link Downloader</h2>
     <span class="pill">X posts &amp; photos • YouTube • Reddit • Instagram • Twitch • Kick • Rumble</span>
   </div>
@@ -255,6 +271,8 @@ const collectionStatus = document.getElementById("collection-status");
 const results = document.getElementById("research-results");
 const handoff = document.getElementById("hermes-handoff");
 const videoDownloadStatus = document.getElementById("video-download-status");
+const pinterestStatus = document.getElementById("pinterest-status");
+const pinterestResults = document.getElementById("pinterest-results");
 let currentResults = [];
 
 function esc(value) {{
@@ -512,6 +530,116 @@ function renderLinkDownloadResult(data) {{
   videoDownloadStatus.innerHTML = `<p>${{esc(summary)}}</p><p>Use <strong>Save file</strong> to copy an output into your browser’s Downloads folder.</p>${{rows ? `<ul class="comments">${{rows}}</ul>` : ""}}`;
 }}
 
+function effectivePinterestQuery() {{
+  return document.getElementById("pinterest-query").value.trim()
+    || document.getElementById("person-topic").value.trim()
+    || document.getElementById("hermes-request").value.trim();
+}}
+
+let pinterestPinsCache = [];
+let pinterestQueryCache = "";
+
+function renderPinterestSearchResult(data) {{
+  const total = data.pins_found || 0;
+  const summary = `Found ${{total}} public pin${{total === 1 ? "" : "s"}}. Press Download all to save the images to data/downloads/pinterest.`;
+  pinterestStatus.hidden = false;
+  pinterestStatus.className = "message " + (total ? "success" : "error");
+  pinterestStatus.innerHTML = `<p>${{esc(summary)}}</p><p>${{esc(data.rights_note || "")}}</p><p><a href="${{esc(data.search_url)}}" target="_blank" rel="noreferrer">Open this search on Pinterest</a></p>`;
+  pinterestPinsCache = data.pins || [];
+  pinterestQueryCache = data.query || "";
+  document.getElementById("download-pinterest").disabled = !pinterestPinsCache.length;
+  pinterestResults.innerHTML = (data.pins || []).map((pin) => {{
+    const label = pin.title || pin.description || `Pinterest pin ${{pin.pin_id}}`;
+    return `<article class="pinterest-card">
+      <img src="${{esc(pin.image_url)}}" alt="${{esc(label)}}" referrerpolicy="no-referrer">
+      <p>${{esc(label)}}</p>
+      <p class="muted">${{pin.pinner ? `@${{esc(pin.pinner)}} • ` : ""}}${{esc(pin.width || "?")}}×${{esc(pin.height || "?")}}</p>
+      <div class="actions small"><a class="button ghost small-button" href="${{esc(pin.pin_url)}}" target="_blank" rel="noreferrer">Open pin</a></div>
+    </article>`;
+  }}).join("");
+}}
+
+function renderPinterestDownloadResult(data) {{
+  const total = data.pins_found || 0;
+  const summary = `Downloaded ${{data.succeeded || 0}} image${{data.succeeded === 1 ? "" : "s"}} to ${{data.host_dir || "data/downloads/pinterest"}}.${{data.failed ? ` ${{data.failed}} download${{data.failed === 1 ? "" : "s"}} failed.` : ""}}`;
+  pinterestStatus.hidden = false;
+  pinterestStatus.className = "message " + (data.failed ? "error" : data.succeeded ? "success" : "error");
+  pinterestStatus.innerHTML = `<p>${{esc(summary)}}</p><p>${{esc(data.rights_note || "")}}</p>`;
+  pinterestResults.innerHTML = (data.downloads || []).map((entry) => {{
+    const label = entry.title || entry.description || `Pinterest pin ${{entry.pin_id}}`;
+    if (entry.status !== "success" || !entry.file) {{
+      return `<article class="pinterest-card"><span class="status missing">failed</span><p>${{esc(label)}}</p><p class="muted">${{esc(entry.error || "Image download failed")}}</p><a href="${{esc(entry.pin_url)}}" target="_blank" rel="noreferrer">Open pin</a></article>`;
+    }}
+    return `<article class="pinterest-card">
+      <img src="${{esc(entry.file.download_url)}}?inline=true" alt="${{esc(label)}}">
+      <p>${{esc(label)}}</p>
+      <p class="muted">${{entry.pinner ? `@${{esc(entry.pinner)}} • ` : ""}}${{esc(entry.width || "?")}}×${{esc(entry.height || "?")}}</p>
+      <div class="actions small"><a class="button ghost small-button" href="${{esc(entry.pin_url)}}" target="_blank" rel="noreferrer">Open pin</a><a class="button ghost small-button" href="${{esc(entry.file.download_url)}}" download>Save file</a></div>
+    </article>`;
+  }}).join("");
+}}
+
+async function searchPinterest(button) {{
+  const query = effectivePinterestQuery();
+  const limit = Math.max(1, Math.min(20, Number(document.getElementById("pinterest-limit").value || 8)));
+  if (!query) {{
+    pinterestStatus.hidden = false;
+    pinterestStatus.className = "message error";
+    pinterestStatus.textContent = "Describe the images to find, enter a person/topic, or add a Hermes request first.";
+    return;
+  }}
+  if (query.length > 300) {{
+    pinterestStatus.hidden = false;
+    pinterestStatus.className = "message error";
+    pinterestStatus.textContent = "Keep the Pinterest image request to 300 characters or fewer.";
+    return;
+  }}
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = `Searching for ${{limit}} image${{limit === 1 ? "" : "s"}}...`;
+  pinterestResults.innerHTML = "";
+  pinterestPinsCache = [];
+  document.getElementById("download-pinterest").disabled = true;
+  pinterestStatus.hidden = false;
+  pinterestStatus.className = "message";
+  pinterestStatus.textContent = "Searching public Pinterest pins...";
+  try {{
+    const data = await postJson("/research/pinterest-search", {{ query, limit }});
+    renderPinterestSearchResult(data);
+  }} catch (error) {{
+    pinterestStatus.className = "message error";
+    pinterestStatus.textContent = error.message;
+  }} finally {{
+    button.disabled = false;
+    button.textContent = originalText;
+  }}
+}}
+
+async function downloadPinterestPins(button) {{
+  if (!pinterestPinsCache.length) {{
+    pinterestStatus.hidden = false;
+    pinterestStatus.className = "message error";
+    pinterestStatus.textContent = "Search for Pinterest images first.";
+    return;
+  }}
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = `Downloading ${{pinterestPinsCache.length}} image${{pinterestPinsCache.length === 1 ? "" : "s"}}...`;
+  pinterestStatus.hidden = false;
+  pinterestStatus.className = "message";
+  pinterestStatus.textContent = "Downloading the original images from Pinterest...";
+  try {{
+    const data = await postJson("/research/pinterest-download", {{ query: pinterestQueryCache, pins: pinterestPinsCache }});
+    renderPinterestDownloadResult(data);
+  }} catch (error) {{
+    pinterestStatus.className = "message error";
+    pinterestStatus.textContent = error.message;
+  }} finally {{
+    button.disabled = false;
+    button.textContent = originalText;
+  }}
+}}
+
 async function downloadVideoLinks(button) {{
   const urls = splitLines(document.getElementById("video-download-urls").value);
   if (!urls.length) {{
@@ -713,6 +841,8 @@ document.getElementById("copy-download-command").addEventListener("click", async
   showMessage(`Copied Docker yt-dlp command for ${{urls.length}} URL${{urls.length === 1 ? "" : "s"}}.`, "success");
 }});
 document.getElementById("download-all").addEventListener("click", (event) => downloadAllResults(event.currentTarget));
+document.getElementById("search-pinterest").addEventListener("click", (event) => searchPinterest(event.currentTarget));
+document.getElementById("download-pinterest").addEventListener("click", (event) => downloadPinterestPins(event.currentTarget));
 document.getElementById("download-video-links").addEventListener("click", (event) => downloadVideoLinks(event.currentTarget));
 results.addEventListener("click", (event) => {{
   const button = event.target.closest("[data-download-id]");

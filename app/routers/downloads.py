@@ -19,7 +19,8 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Item
-from app.schemas import LinksDownloadRequest, XLinksDownloadRequest
+from app.pinterest_client import download_pinterest_pin, pinterest_query_slug, search_public_pinterest
+from app.schemas import LinksDownloadRequest, PinterestImageResearchRequest, XLinksDownloadRequest
 from app.web_headers import web_client_kwargs
 from app.x_client import _tweet_from_public_status_html
 
@@ -1480,10 +1481,54 @@ async def download_x_links(
     return await download_links(urls, download_root, timeout_seconds, concurrency)
 
 
+async def research_pinterest_images(
+    query: str,
+    limit: int = 8,
+    download_root: Path = DOWNLOAD_ROOT,
+    concurrency: int = 4,
+) -> dict[str, Any]:
+    search_url, pins = await search_public_pinterest(query, limit)
+    target_dir = download_root / "pinterest" / pinterest_query_slug(query)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    semaphore = asyncio.Semaphore(max(1, min(concurrency, 5)))
+
+    async def download_one(pin) -> dict[str, Any]:
+        title = pin.title or pin.description or "pinterest-image"
+        stem = target_dir / f"{_safe_segment(title, 'pinterest-image', max_length=90)} [Pinterest-{pin.pin_id}]"
+        entry = pin.as_dict()
+        try:
+            async with semaphore:
+                path = await download_pinterest_pin(pin, stem)
+            entry.update({"status": "success", "file": _file_info(path, download_root), "error": None})
+        except Exception as exc:
+            entry.update({"status": "failed", "file": None, "error": str(exc)})
+        return entry
+
+    downloads = list(await asyncio.gather(*(download_one(pin) for pin in pins)))
+    succeeded = sum(entry["status"] == "success" for entry in downloads)
+    failed = len(downloads) - succeeded
+    status = "success" if succeeded and not failed else "partial" if succeeded else "failed"
+    files = [entry["file"] for entry in downloads if entry.get("file")]
+    return {
+        "status": status,
+        "query": " ".join(query.split()).strip(),
+        "search_url": search_url,
+        "requested_count": limit,
+        "pins_found": len(pins),
+        "succeeded": succeeded,
+        "failed": failed,
+        "download_dir": str(target_dir),
+        "host_dir": str(Path("./data/downloads") / target_dir.relative_to(download_root)),
+        "downloads": downloads,
+        "files": files,
+        "rights_note": "Pinterest results may be copyrighted. Verify permission and usage rights before republishing them.",
+    }
+
+
 @router.get("/downloads/files/{file_path:path}")
-async def download_saved_file(file_path: str):
+async def download_saved_file(file_path: str, inline: bool = False):
     path = _resolve_download_file(file_path)
-    return FileResponse(path, filename=path.name)
+    return FileResponse(path, filename=None if inline else path.name)
 
 
 @router.post("/downloads/items/{item_id}")
@@ -1499,3 +1544,83 @@ async def download_x_links_endpoint(request: XLinksDownloadRequest):
 @router.post("/downloads/links")
 async def download_links_endpoint(request: LinksDownloadRequest):
     return await download_links(request.urls)
+
+
+@router.post("/research/pinterest-images")
+async def research_pinterest_images_endpoint(request: PinterestImageResearchRequest):
+    try:
+        return await research_pinterest_images(request.query, request.limit)
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=f"Pinterest image research failed: {exc}") from exc
+
+
+@router.post("/research/pinterest-search")
+async def pinterest_search_only_endpoint(request: PinterestImageResearchRequest):
+    """Search public Pinterest pins and return metadata without downloading images."""
+    try:
+        search_url, pins = await search_public_pinterest(request.query, request.limit)
+        return {
+            "status": "success",
+            "query": " ".join(request.query.split()).strip(),
+            "search_url": search_url,
+            "pins_found": len(pins),
+            "pins": [pin.as_dict() for pin in pins],
+            "rights_note": "Pinterest results may be copyrighted. Verify permission and usage rights before republishing them.",
+        }
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=f"Pinterest search failed: {exc}") from exc
+
+
+@router.post("/research/pinterest-download")
+async def pinterest_download_pins_endpoint(request: dict):
+    """Download images for previously searched Pinterest pins."""
+    pins_data = request.get("pins", [])
+    query = request.get("query", "pinterest-images")
+    if not pins_data:
+        raise HTTPException(status_code=400, detail="No pins to download")
+    target_dir = DOWNLOAD_ROOT / "pinterest" / pinterest_query_slug(query)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    semaphore = asyncio.Semaphore(4)
+
+    from app.pinterest_client import PinterestPin
+
+    async def download_one(pin_dict: dict) -> dict[str, Any]:
+        pin = PinterestPin(
+            pin_id=str(pin_dict.get("pin_id", "")),
+            title=pin_dict.get("title", ""),
+            description=pin_dict.get("description", ""),
+            pin_url=pin_dict.get("pin_url", ""),
+            image_url=pin_dict.get("image_url", ""),
+            width=pin_dict.get("width"),
+            height=pin_dict.get("height"),
+            pinner=pin_dict.get("pinner"),
+        )
+        title = pin.title or pin.description or "pinterest-image"
+        stem = target_dir / f"{_safe_segment(title, 'pinterest-image', max_length=90)} [Pinterest-{pin.pin_id}]"
+        entry = pin.as_dict()
+        try:
+            async with semaphore:
+                path = await download_pinterest_pin(pin, stem)
+            entry.update({"status": "success", "file": _file_info(path, DOWNLOAD_ROOT), "error": None})
+        except Exception as exc:
+            entry.update({"status": "failed", "file": None, "error": str(exc)})
+        return entry
+
+    downloads = list(await asyncio.gather(*(download_one(p) for p in pins_data)))
+    succeeded = sum(entry["status"] == "success" for entry in downloads)
+    failed = len(downloads) - succeeded
+    status = "success" if succeeded and not failed else "partial" if succeeded else "failed"
+    files = [entry["file"] for entry in downloads if entry.get("file")]
+    return {
+        "status": status,
+        "query": " ".join(query.split()).strip(),
+        "requested_count": len(pins_data),
+        "pins_found": len(pins_data),
+        "succeeded": succeeded,
+        "failed": failed,
+        "download_dir": str(target_dir),
+        "host_dir": str(Path("./data/downloads") / target_dir.relative_to(DOWNLOAD_ROOT)),
+        "downloads": downloads,
+        "files": files,
+        "rights_note": "Pinterest results may be copyrighted. Verify permission and usage rights before republishing them.",
+    }
