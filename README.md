@@ -1,5 +1,8 @@
 # Drama Clip Scout
 
+> [!IMPORTANT]
+> **Prerequisite**: Set up [hermes-dashboard](https://github.com/ariqserazi/hermes-dashboard) first before setting up this application.
+
 Drama Clip Scout is a local Docker application for finding, ranking, reviewing, and optionally downloading public streamer clip leads. It collects public metadata and links from Reddit, X/Twitter, and Kiwi Farms, stores them in SQLite, and exposes both a browser dashboard and a FastAPI API that Hermes can call.
 
 Drama Clip Scout is a research aid, not a fact-checker. Every result is a lead to review against its linked source before making a claim.
